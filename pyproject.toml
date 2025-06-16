@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "magicscroll"
+version = "0.1.0"
+description = "A multi-modal data management and retrieval system"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    {name = "Rob", email = "rob@example.com"},
+]
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",  # for BaseSettings
+    "pymilvus>=2.5.11",  # milvus-lite comes with this
+    "pyoxigraph>=0.4.11",  # Python bindings for Oxigraph RDF store
+    "python-dotenv>=1.0.0",  # for environment variables
+    "python-multipart>=0.0.6",  # for form data handling
+    "httpx>=0.25.0",  # for async http client
+    "rich>=13.7.0",  # for beautiful CLI output
+    "typer[all]>=0.9.0",  # for CLI interface
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.5.0",
+]
+
+[project.scripts]
+magicscroll = "magicscroll.cli:main"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.7.1",
+    "ruff>=0.0.284",
+    "mypy>=1.5.1",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

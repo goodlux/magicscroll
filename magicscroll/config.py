@@ -1,0 +1,53 @@
+"""Configuration management for magicscroll."""
+
+import os
+from pathlib import Path
+from typing import Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    """Application settings."""
+    
+    # Storage paths
+    data_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".magicscroll",
+        description="Directory for storing magicscroll data"
+    )
+    
+    # Database settings
+    oxigraph_path: Optional[Path] = None
+    milvus_path: Optional[Path] = None
+    sqlite_path: Optional[Path] = None
+    
+    # API settings
+    host: str = "127.0.0.1"
+    port: int = 8000
+    debug: bool = False
+    
+    model_config = {
+        "env_prefix": "MAGICSCROLL_",
+        "env_file": ".env"
+    }
+    
+    def model_post_init(self, __context) -> None:
+        """Set up default paths after initialization."""
+        if self.oxigraph_path is None:
+            self.oxigraph_path = self.data_dir / "oxigraph"
+        if self.milvus_path is None:
+            self.milvus_path = self.data_dir / "milvus"
+        if self.sqlite_path is None:
+            self.sqlite_path = self.data_dir / "sqlite" / "magicscroll-sqlite.db"
+    
+    def ensure_data_dir(self) -> None:
+        """Create data directory if it doesn't exist."""
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.oxigraph_path.parent.mkdir(parents=True, exist_ok=True)
+        self.milvus_path.mkdir(parents=True, exist_ok=True)
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+# Global settings instance
+settings = Settings()
