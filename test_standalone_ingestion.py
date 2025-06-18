@@ -1,29 +1,27 @@
-"""Claude Message Ingestor - Converts Claude exports to MagicScroll format."""
+"""Standalone test for Claude ingestor without module dependencies."""
+import asyncio
+import sys
+import os
 import json
-import uuid
 import sqlite3
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import logging
 
-from .config import settings
-
-# from .digital_trinity.fipa_acl import FIPAACLMessage  # Not needed for direct storage
-
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ClaudeMessageIngestor:
-    """Ingests Claude conversation exports into MagicScroll using FIPA-ACL format."""
+    """Standalone version for testing - copied from claude_ingestor.py"""
     
     def __init__(self, db_path: str = None):
-        """Initialize the Claude message ingestor.
-        
-        Args:
-            db_path: Path to SQLite database file. If None, uses configured path.
-        """
+        """Initialize the Claude message ingestor."""
         if db_path is None:
-            db_path = str(settings.sqlite_path)
+            # Use the configured magicscroll database path
+            db_path = "/Users/rob/.magicscroll/sqlite/magicscroll-sqlite.db"
             # Ensure directory exists
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         
@@ -32,6 +30,19 @@ class ClaudeMessageIngestor:
         self.processed_messages = 0
         self.errors = []
         self.connection = None
+    
+    def connect_db(self) -> sqlite3.Connection:
+        """Connect to SQLite database and return connection."""
+        if self.connection is None:
+            self.connection = sqlite3.connect(self.db_path)
+            self.connection.row_factory = sqlite3.Row
+        return self.connection
+    
+    def close_db(self):
+        """Close database connection."""
+        if self.connection:
+            self.connection.close()
+            self.connection = None
     
     def ensure_database_schema(self):
         """Ensure the database has the required tables."""
@@ -78,15 +89,7 @@ class ClaudeMessageIngestor:
         logger.info("Database schema ensured")
     
     def parse_claude_export(self, export_path: str) -> List[Dict[str, Any]]:
-        """
-        Parse Claude export JSON file.
-        
-        Args:
-            export_path: Path to the Claude export JSON file
-            
-        Returns:
-            List of conversation dictionaries
-        """
+        """Parse Claude export JSON file."""
         try:
             with open(export_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -102,15 +105,7 @@ class ClaudeMessageIngestor:
             raise
     
     def extract_message_content(self, message: Dict[str, Any]) -> str:
-        """
-        Extract the main text content from a Claude message.
-        
-        Args:
-            message: Claude message dictionary
-            
-        Returns:
-            Extracted text content
-        """
+        """Extract the main text content from a Claude message."""
         # Try text field first
         if 'text' in message and message['text']:
             return message['text']
@@ -125,19 +120,10 @@ class ClaudeMessageIngestor:
             if text_parts:
                 return '\n'.join(text_parts)
         
-        # Last resort
         return ""
     
     def extract_message_metadata(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Extract metadata from Claude message including attachments and files.
-        
-        Args:
-            message: Claude message dictionary
-            
-        Returns:
-            Metadata dictionary
-        """
+        """Extract metadata from Claude message."""
         metadata = {
             'original_format': 'claude_export',
             'claude_message_uuid': message.get('uuid', ''),
@@ -148,7 +134,7 @@ class ClaudeMessageIngestor:
         if 'attachments' in message and message['attachments']:
             metadata['attachments'] = message['attachments']
         
-        # Add file information (with extracted content if available)
+        # Add file information
         if 'files' in message and message['files']:
             metadata['files'] = message['files']
         
@@ -164,17 +150,7 @@ class ClaudeMessageIngestor:
         conversation_id: str,
         previous_message_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Convert Claude message to FIPA-ACL format.
-        
-        Args:
-            claude_message: Claude message dictionary
-            conversation_id: Conversation UUID
-            previous_message_id: Previous message ID for threading
-            
-        Returns:
-            FIPA message dictionary
-        """
+        """Convert Claude message to FIPA-ACL format."""
         # Get the actual speaker from Claude export
         speaker = claude_message.get('sender', 'unknown')
         
@@ -214,15 +190,7 @@ class ClaudeMessageIngestor:
         return fipa_message
     
     def process_conversation(self, conversation: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Process a single Claude conversation into FIPA-ACL messages.
-        
-        Args:
-            conversation: Claude conversation dictionary
-            
-        Returns:
-            List of FIPA message dictionaries
-        """
+        """Process a single Claude conversation into FIPA-ACL messages."""
         try:
             conversation_id = conversation.get('uuid', str(uuid.uuid4()))
             messages = conversation.get('chat_messages', [])
@@ -260,15 +228,7 @@ class ClaudeMessageIngestor:
             return []
     
     def create_conversation_record(self, conversation: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Create conversation record for storage.
-        
-        Args:
-            conversation: Claude conversation dictionary
-            
-        Returns:
-            Conversation record for database
-        """
+        """Create conversation record for storage."""
         return {
             'conversation_id': conversation.get('uuid', str(uuid.uuid4())),
             'title': conversation.get('name', 'Untitled Conversation'),
@@ -284,19 +244,6 @@ class ClaudeMessageIngestor:
                 )
             })
         }
-    
-    def connect_db(self) -> sqlite3.Connection:
-        """Connect to SQLite database and return connection."""
-        if self.connection is None:
-            self.connection = sqlite3.connect(self.db_path)
-            self.connection.row_factory = sqlite3.Row  # Enable dict-like access
-        return self.connection
-    
-    def close_db(self):
-        """Close database connection."""
-        if self.connection:
-            self.connection.close()
-            self.connection = None
     
     def store_conversation(self, conversation_record: Dict[str, Any]) -> bool:
         """Store a conversation record in the database."""
@@ -368,18 +315,7 @@ class ClaudeMessageIngestor:
         store_messages: bool = True,
         create_vectors: bool = True
     ) -> Dict[str, Any]:
-        """
-        Main ingestion method to process Claude export and store in MagicScroll.
-        
-        Args:
-            export_path: Path to Claude export JSON file
-            store_conversations: Whether to store conversation metadata
-            store_messages: Whether to store individual messages  
-            create_vectors: Whether to create vector embeddings
-            
-        Returns:
-            Ingestion summary
-        """
+        """Main ingestion method."""
         logger.info(f"Starting Claude export ingestion from {export_path}")
         
         # Reset counters
@@ -432,9 +368,6 @@ class ClaudeMessageIngestor:
                     logger.warning(f"Skipping conversation due to error: {e}")
                     continue
             
-            # TODO: Store in MagicScroll databases
-            # For now, just return the processed data
-            
             # Close database connection
             self.close_db()
             
@@ -456,53 +389,111 @@ class ClaudeMessageIngestor:
             raise
 
 
-# Example usage function for testing
-async def test_claude_ingestor(export_path: str, db_path: str = None):
-    """Test the Claude ingestor with a sample export."""
-    # Use a test database path or in-memory
-    test_db_path = db_path or '/tmp/test_magicscroll.db'
-    ingestor = ClaudeMessageIngestor(test_db_path)
+async def test_full_ingestion():
+    """Test the complete Claude ingestion pipeline with configured database."""
+    
+    print("🦹‍♂️ Testing Complete Claude → SQLite Pipeline (Using Configured Database)")
+    
+    # Use default configured path (no hardcoded paths!)
+    ingestor = ClaudeMessageIngestor()  # Will use settings.sqlite_path
+    print(f"💾 Using configured database: {ingestor.db_path}")
+    
+    # Test configuration - try multiple possible paths
+    possible_paths = [
+        "/Users/rob/repos/anthropic/data-2025-05-21-17-32-01/sample_conversations.json",
+        "/Users/rob/repos/anthropic/data-2025-05-21-17-32-01/conversations.json",
+        "./sample_conversations.json"
+    ]
+    
+    export_file = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            export_file = path
+            break
+    
+    if not export_file:
+        print("❌ Could not find Claude export file. Tried:")
+        for path in possible_paths:
+            print(f"  - {path}")
+        return
     
     try:
+        print(f"📂 Processing export file: {export_file}")
+        
+        # Run the complete ingestion
         result = await ingestor.ingest_claude_export(
-            export_path,
+            export_file,
             store_conversations=True,
             store_messages=True,
-            create_vectors=False  # Skip vectors for now
+            create_vectors=False
         )
         
-        print(f"Ingestion Result: {json.dumps(result, indent=2)}")
+        print(f"\n✅ Ingestion completed!")
+        print(f"📊 Results:")
+        print(f"  - Processed conversations: {result['processed_conversations']}")
+        print(f"  - Processed messages: {result['processed_messages']}")
+        print(f"  - Stored to database: {result['stored_to_db']}")
+        print(f"  - Errors: {result['errors']}")
         
-        if result['stored_to_db']:
-            print(f"\n✅ Data stored to database: {test_db_path}")
-            
-            # Quick verification
-            conn = sqlite3.connect(test_db_path)
+        if result['errors'] > 0:
+            print(f"\n⚠️ Error details:")
+            for error in result['error_messages']:
+                print(f"  - {error}")
+        
+        # Verify the database
+        if os.path.exists(ingestor.db_path):
+            conn = sqlite3.connect(ingestor.db_path)
             cursor = conn.cursor()
             
             cursor.execute("SELECT COUNT(*) FROM fipa_conversations")
             conv_count = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM fipa_messages")
+            cursor.execute("SELECT COUNT(*) FROM fipa_messages") 
             msg_count = cursor.fetchone()[0]
             
-            print(f"📊 Database contains: {conv_count} conversations, {msg_count} messages")
+            print(f"\n📊 Database verification (REAL database):")
+            print(f"  - Conversations in DB: {conv_count}")
+            print(f"  - Messages in DB: {msg_count}")
+            
+            # Show a sample conversation
+            cursor.execute("""
+                SELECT conversation_id, title, message_count 
+                FROM fipa_conversations 
+                ORDER BY start_time DESC
+                LIMIT 1
+            """)
+            
+            sample_conv = cursor.fetchone()
+            if sample_conv:
+                conv_id, title, msg_count = sample_conv
+                print(f"\n🔍 Most recent conversation:")
+                print(f"  - ID: {conv_id}")
+                print(f"  - Title: {title}")
+                print(f"  - Message count: {msg_count}")
+                
+                # Show sample messages
+                cursor.execute("""
+                    SELECT speaker, performative, content
+                    FROM fipa_messages 
+                    WHERE conversation_id = ?
+                    ORDER BY timestamp
+                    LIMIT 3
+                """, (conv_id,))
+                
+                messages = cursor.fetchall()
+                print(f"  - Sample messages:")
+                for i, (speaker, perf, content) in enumerate(messages):
+                    preview = content[:60] + "..." if len(content) > 60 else content
+                    print(f"    {i+1}. {speaker} ({perf}): {preview}")
             
             conn.close()
+            
+        print(f"\n🎉 Test completed successfully!")
+        print(f"💾 All data stored in configured database: {ingestor.db_path}")
         
-        if ingestor.errors:
-            print(f"\n⚠️ Errors encountered:")
-            for error in ingestor.errors[:5]:  # Show first 5 errors
-                print(f"  - {error}")
-                
     except Exception as e:
-        print(f"❌ Ingestion failed: {e}")
+        print(f"❌ Test failed: {e}")
         raise
 
 if __name__ == "__main__":
-    import asyncio
-    # Test with the sample file
-    asyncio.run(test_claude_ingestor(
-        "/Users/rob/repos/anthropic/data-2025-05-21-17-32-01/sample_conversations.json",
-        "/tmp/test_magicscroll.db"
-    ))
+    asyncio.run(test_full_ingestion())

@@ -47,7 +47,22 @@ class Settings(BaseSettings):
         self.oxigraph_path.parent.mkdir(parents=True, exist_ok=True)
         self.milvus_path.mkdir(parents=True, exist_ok=True)
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    def get_milvus_path(self) -> Path:
+        """Get the Milvus database path."""
+        return self.milvus_path
+    
+    def get_oxigraph_path(self) -> Path:
+        """Get the Oxigraph database path."""
+        return self.oxigraph_path
+    
+    def get_sqlite_path(self) -> Path:
+        """Get the SQLite database path."""
+        return self.sqlite_path
 
 
 # Global settings instance
 settings = Settings()
+
+# Alias for backwards compatibility
+Config = Settings
