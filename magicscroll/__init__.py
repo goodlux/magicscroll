@@ -15,6 +15,12 @@ from .ms_entity import EntityExtractor, EntityManager, ExtractedEntity
 from .ms_milvus_store import MSMilvusStore
 from .ms_sqlite_store import MSSQLiteStore
 
+# Ingestor modules
+from .ingestor import BaseIngestor, AnthropicIngestor
+
+# CLI module
+from .cli import MagicScrollCLI
+
 # Digital Trinity integration
 from .digital_trinity import (
     FIPAACLMessage as DTFIPAACLMessage,
@@ -35,6 +41,10 @@ __all__ = [
     # New migrated modules
     "EntityExtractor", "EntityManager", "ExtractedEntity",
     "MSMilvusStore", "MSSQLiteStore",
+    # Ingestor modules
+    "BaseIngestor", "AnthropicIngestor",
+    # CLI
+    "MagicScrollCLI",
     # Digital Trinity
     "DTFIPAACLMessage", "DTFIPAACLDatabase", "MessageAdapter",
     "AgentProfile", "ModelHandler", "OpenAIModelHandler", "AnthropicModelHandler",

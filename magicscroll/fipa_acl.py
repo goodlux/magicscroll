@@ -86,29 +86,24 @@ class FIPAACLMessage:
         self.metadata = {}
         
     def to_dict(self) -> Dict[str, Any]:
-        """Convert message to dictionary"""
+        """Convert message to dictionary using existing schema format"""
         return {
-            'id': self.id,
-            'performative': self.performative,
+            'message_id': self.id,
+            'conversation_id': self.conversation_id,
             'sender': self.sender,
             'receiver': self.receiver,
+            'speaker': self.sender,  # Use sender as speaker for compatibility
             'content': self.content,
-            'conversation_id': self.conversation_id,
-            'reply_to': self.reply_to,
-            'language': self.language,
-            'encoding': self.encoding,
-            'ontology': self.ontology,
-            'protocol': self.protocol,
+            'performative': self.performative,
+            'timestamp': self.created_at,
             'reply_with': self.reply_with,
             'in_reply_to': self.in_reply_to,
-            'reply_by': self.reply_by,
-            'created_at': self.created_at,
             'metadata': json.dumps(self.metadata)
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'FIPAACLMessage':
-        """Create message from dictionary"""
+        """Create message from dictionary using existing schema format"""
         # Extract core parameters for the constructor
         msg = cls(
             performative=data['performative'],
@@ -116,19 +111,13 @@ class FIPAACLMessage:
             receiver=data.get('receiver'),
             content=data.get('content'),
             conversation_id=data.get('conversation_id'),
-            reply_to=data.get('reply_to'),
-            language=data.get('language'),
-            encoding=data.get('encoding'),
-            ontology=data.get('ontology'),
-            protocol=data.get('protocol'),
             reply_with=data.get('reply_with'),
             in_reply_to=data.get('in_reply_to'),
-            reply_by=data.get('reply_by'),
-            message_id=data.get('id')
+            message_id=data.get('message_id')  # Use message_id from existing schema
         )
         
-        if 'created_at' in data:
-            msg.created_at = data['created_at']
+        if 'timestamp' in data:
+            msg.created_at = data['timestamp']
             
         # Handle metadata if present
         if 'metadata' in data and data['metadata']:
@@ -166,35 +155,32 @@ class FIPAACLDatabase:
         """Create the necessary tables if they don't exist."""
         cursor = self.conn.cursor()
         
-        # Create message table based on FIPA ACL message structure
+        # Create message table - use existing schema to match claude_ingestor.py
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS fipa_messages (
-            id TEXT PRIMARY KEY,
+            message_id TEXT PRIMARY KEY,
             conversation_id TEXT,
-            performative TEXT NOT NULL,
             sender TEXT NOT NULL,
             receiver TEXT,
-            reply_to TEXT,
+            speaker TEXT NOT NULL,
             content TEXT,
-            language TEXT,
-            encoding TEXT,
-            ontology TEXT,
-            protocol TEXT,
+            performative TEXT NOT NULL,
+            timestamp TEXT,
             reply_with TEXT,
             in_reply_to TEXT,
-            reply_by TEXT,
-            created_at TEXT,
             metadata TEXT
         )
         ''')
         
-        # Create conversation table
+        # Create conversation table - use existing schema to match claude_ingestor.py
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS fipa_conversations (
-            id TEXT PRIMARY KEY,
+            conversation_id TEXT PRIMARY KEY,
             title TEXT,
-            created_at TEXT,
-            updated_at TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            account_uuid TEXT,
+            message_count INTEGER DEFAULT 0,
             metadata TEXT
         )
         ''')
@@ -259,7 +245,7 @@ class FIPAACLDatabase:
             The message if found, otherwise None
         """
         cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM fipa_messages WHERE id = ?", (message_id,))
+        cursor.execute("SELECT * FROM fipa_messages WHERE message_id = ?", (message_id,))
         
         row = cursor.fetchone()
         if row is None:
@@ -282,7 +268,7 @@ class FIPAACLDatabase:
         """
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT * FROM fipa_messages WHERE conversation_id = ? ORDER BY created_at",
+            "SELECT * FROM fipa_messages WHERE conversation_id = ? ORDER BY timestamp",
             (conversation_id,)
         )
         
@@ -312,8 +298,8 @@ class FIPAACLDatabase:
         title = title or f"Conversation {now}"
         
         cursor.execute(
-            "INSERT INTO fipa_conversations (id, title, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?)",
-            (conversation_id, title, now, now, '{}')
+            "INSERT OR REPLACE INTO fipa_conversations (conversation_id, title, start_time, end_time, account_uuid, message_count, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (conversation_id, title, now, now, '', 0, '{}')
         )
         
         self.conn.commit()

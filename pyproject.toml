@@ -15,14 +15,20 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "pydantic>=2.5.0",
-    "pydantic-settings>=2.1.0",  # for BaseSettings
-    "pymilvus>=2.5.11",  # milvus-lite comes with this
-    "pyoxigraph>=0.4.11",  # Python bindings for Oxigraph RDF store
-    "python-dotenv>=1.0.0",  # for environment variables
-    "python-multipart>=0.0.6",  # for form data handling
-    "httpx>=0.25.0",  # for async http client
-    "rich>=13.7.0",  # for beautiful CLI output
-    "typer[all]>=0.9.0",  # for CLI interface
+    "pydantic-settings>=2.1.0", # for BaseSettings
+    "pymilvus>=2.5.11", # milvus-lite comes with this
+    "pyoxigraph>=0.4.11", # Python bindings for Oxigraph RDF store
+    "mcp>=1.0.0", # Model Context Protocol server
+    "sentence-transformers", # for embeddings
+    "tiktoken", # for tokenization
+    "openai", # for OpenAI integration
+    "spacy", # for NLP
+    "starlette", # for HTTP server
+    "python-dotenv>=1.0.0", # for environment variables
+    "python-multipart>=0.0.6", # for form data handling
+    "httpx>=0.25.0", # for async http client
+    "rich>=13.7.0", # for beautiful CLI output
+    "typer>=0.9.0", # for CLI interface
 ]
 
 [project.optional-dependencies]

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     oxigraph_path: Optional[Path] = None
     milvus_path: Optional[Path] = None
     sqlite_path: Optional[Path] = None
+    pixeltable_path: Optional[Path] = None
     
     # API settings
     host: str = "127.0.0.1"
@@ -40,6 +41,8 @@ class Settings(BaseSettings):
             self.milvus_path = self.data_dir / "milvus"
         if self.sqlite_path is None:
             self.sqlite_path = self.data_dir / "sqlite" / "magicscroll-sqlite.db"
+        if self.pixeltable_path is None:
+            self.pixeltable_path = self.data_dir / "pixeltable"
     
     def ensure_data_dir(self) -> None:
         """Create data directory if it doesn't exist."""
@@ -47,6 +50,7 @@ class Settings(BaseSettings):
         self.oxigraph_path.parent.mkdir(parents=True, exist_ok=True)
         self.milvus_path.mkdir(parents=True, exist_ok=True)
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        self.pixeltable_path.mkdir(parents=True, exist_ok=True)
     
     def get_milvus_path(self) -> Path:
         """Get the Milvus database path."""
@@ -59,6 +63,10 @@ class Settings(BaseSettings):
     def get_sqlite_path(self) -> Path:
         """Get the SQLite database path."""
         return self.sqlite_path
+    
+    def get_pixeltable_path(self) -> Path:
+        """Get the Pixeltable database path."""
+        return self.pixeltable_path
 
 
 # Global settings instance
