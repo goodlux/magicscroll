@@ -2,6 +2,13 @@
 
 A multi-modal data backend for AI chat applications and personal information management.
 
+## Quick start
+
+```
+magicscroll
+```
+
+
 ## Overview
 
 MagicScroll provides a unified storage layer that combines three complementary database technologies to handle different aspects of personal AI data:
