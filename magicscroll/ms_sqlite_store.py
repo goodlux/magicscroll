@@ -1,286 +1,236 @@
-import os
+"""
+SQLite storage for MagicScroll - handles live conversations only.
+"""
+
 import sqlite3
 import json
-from typing import Optional, Dict, Any, List
+import uuid
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, timedelta
 from pathlib import Path
-
-from .ms_entry import MSEntry, EntryType
-from .config import Config
 import logging
+
+from .ms_message import MSMessage
+from .config import settings
+from .db.schemas.sqlite_schema import SQLiteSchema
 
 logger = logging.getLogger(__name__)
 
-# Default SQLite database path
-DEFAULT_DB_PATH = os.path.expanduser("~/.magicscroll/magicscroll.db")
-
 class MSSQLiteStore:
-    """SQLite storage for MagicScroll."""
+    """SQLite storage for live conversations only."""
     
     def __init__(self, db_path: Optional[str] = None):
-        """Initialize SQLite storage."""
-        self.db_path = db_path or DEFAULT_DB_PATH
-        self._ensure_directory_exists()
+        """Initialize SQLite storage using the authoritative schema."""
+        self.db_path = db_path or str(settings.sqlite_path)
         
-        self.conn = self._create_connection()
+        # Use the authoritative schema to get connection
+        try:
+            self.conn = SQLiteSchema.get_connection(Path(self.db_path))
+            logger.info(f"SQLite store initialized using authoritative schema at {self.db_path}")
+        except Exception as e:
+            logger.error(f"Failed to initialize with authoritative schema: {e}")
+            raise
         
-        # Initialize tables
-        self._init_tables()
-        
-        # Set vector capabilities flag
-        self.has_vec_extension = False
-        
-        # Set up embedding model - using sentence-transformers
+        # Set up embedding model - using sentence-transformers (for future use)
         try:
             from sentence_transformers import SentenceTransformer
             self.embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-            logger.info("Sentence transformers model loaded for embeddings")
+            logger.info("Sentence transformers model loaded")
         except ImportError:
-            logger.warning("sentence-transformers not installed, vector search will be limited")
+            logger.warning("sentence-transformers not installed")
             self.embed_model = None
-            
-        logger.info(f"SQLite store initialized at {self.db_path}")
-        if self.has_vec_extension:
-            logger.info("Vector search capabilities enabled")
-        else:
-            logger.warning("Vector search NOT available - install with: pip install sqlite-vec")
-    
-    def _ensure_directory_exists(self):
-        """Make sure the directory for the database exists."""
-        db_dir = os.path.dirname(self.db_path)
-        os.makedirs(db_dir, exist_ok=True)
-    
-    def _create_connection(self) -> sqlite3.Connection:
-        """Create a connection to the SQLite database."""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row  # Make rows accessible by column name
-            return conn
-        except sqlite3.Error as e:
-            logger.error(f"Error connecting to SQLite database: {e}")
-            raise
-    
-    def _init_tables(self):
-        """Initialize database tables."""
-        try:
-            cursor = self.conn.cursor()
-            
-            # Create entries table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS entries (
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                entry_type TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                metadata TEXT NOT NULL
-            )
-            ''')
-            
-            self.conn.commit()
-            logger.info("Database tables initialized")
-        except sqlite3.Error as e:
-            logger.error(f"Error initializing database tables: {e}")
-            self.conn.rollback()
-            raise
     
     @classmethod
     async def create(cls, db_path: Optional[str] = None) -> 'MSSQLiteStore':
         """Factory method to create store instance."""
         return cls(db_path)
     
-    async def save_ms_entry(self, entry: MSEntry) -> bool:
-        """Store a MagicScroll entry."""
-        try:
-            cursor = self.conn.cursor()
-            
-            # Convert metadata to JSON string
-            metadata_json = json.dumps(entry.metadata)
-            created_at_iso = entry.created_at.isoformat()
-            
-            # Insert/update entry in the main table
-            cursor.execute('''
-            INSERT OR REPLACE INTO entries (id, content, entry_type, created_at, metadata)
-            VALUES (?, ?, ?, ?, ?)
-            ''', (entry.id, entry.content, entry.entry_type.value, created_at_iso, metadata_json))
-            
-            self.conn.commit()
-            logger.info(f"Entry {entry.id} stored successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error storing entry: {e}")
-            self.conn.rollback()
-            return False
+    # ============================================
+    # LIVE MESSAGE METHODS (using fipa_messages)
+    # ============================================
     
-    async def get_ms_entry(self, entry_id: str) -> Optional[MSEntry]:
-        """Retrieve a MagicScroll entry."""
-        try:
-            cursor = self.conn.cursor()
+    def save_message(self, message: MSMessage) -> None:
+        """
+        Save a live message to the database.
+        
+        Args:
+            message: The message to save
+        """
+        cursor = self.conn.cursor()
+        data = message.to_dict()
+        
+        # Ensure we have all the fields for the fipa_messages table
+        # Add speaker field (copy from sender for compatibility)
+        if 'speaker' not in data:
+            data['speaker'] = data['sender']
+        
+        # Use created_at for both created_at and timestamp fields
+        if 'timestamp' not in data:
+            data['timestamp'] = data['created_at']
+        
+        # Convert metadata to JSON if it's not already
+        if 'metadata' not in data or data['metadata'] is None:
+            data['metadata'] = json.dumps({})
+        elif isinstance(data['metadata'], dict):
+            data['metadata'] = json.dumps(data['metadata'])
+        
+        # Insert into fipa_messages table
+        placeholders = ', '.join(['?'] * len(data))
+        columns = ', '.join(data.keys())
+        values = list(data.values())
+        
+        sql = f"INSERT OR REPLACE INTO fipa_messages ({columns}) VALUES ({placeholders})"
+        cursor.execute(sql, values)
+        self.conn.commit()
+        logger.info(f"Message {message.id} saved to fipa_messages")
+    
+    def get_message(self, message_id: str) -> Optional[MSMessage]:
+        """
+        Retrieve a message by its ID.
+        
+        Args:
+            message_id: The ID of the message to retrieve
             
-            cursor.execute('''
-            SELECT id, content, entry_type, created_at, metadata
-            FROM entries
-            WHERE id = ?
-            ''', (entry_id,))
-            
-            row = cursor.fetchone()
-            if not row:
-                return None
-                
-            # Parse the row data
-            metadata = json.loads(row['metadata'])
-            
-            # Create MSEntry directly
-            return MSEntry(
-                id=row['id'], 
-                content=row['content'],
-                entry_type=EntryType(row['entry_type']),
-                created_at=datetime.fromisoformat(row['created_at']),
-                metadata=metadata
-            )
-            
-        except Exception as e:
-            logger.error(f"Error retrieving entry: {e}")
+        Returns:
+            The message if found, otherwise None
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM fipa_messages WHERE message_id = ?", (message_id,))
+        
+        row = cursor.fetchone()
+        if row is None:
             return None
+            
+        column_names = [description[0] for description in cursor.description]
+        data = dict(zip(column_names, row))
+        
+        return MSMessage.from_dict(data)
     
-    async def delete_ms_entry(self, entry_id: str) -> bool:
-        """Delete a MagicScroll entry."""
-        try:
-            cursor = self.conn.cursor()
+    def get_conversation_messages(self, conversation_id: str) -> List[MSMessage]:
+        """
+        Retrieve all messages in a conversation.
+        
+        Args:
+            conversation_id: The ID of the conversation
             
-            # Delete from main table (will cascade delete from vector table)
-            cursor.execute('DELETE FROM entries WHERE id = ?', (entry_id,))
+        Returns:
+            List of messages in the conversation, ordered by timestamp
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT * FROM fipa_messages WHERE conversation_id = ? ORDER BY created_at",
+            (conversation_id,)
+        )
+        
+        messages = []
+        column_names = [description[0] for description in cursor.description]
+        
+        for row in cursor.fetchall():
+            data = dict(zip(column_names, row))
+            messages.append(MSMessage.from_dict(data))
             
-            self.conn.commit()
-            logger.info(f"Entry {entry_id} deleted")
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting entry: {e}")
-            self.conn.rollback()
-            return False
+        return messages
     
-    async def search_by_vector(
-        self, 
-        query_embedding: List[float], 
-        limit: int = 5,
-        entry_types: Optional[List[EntryType]] = None,
-        temporal_filter: Optional[Dict[str, datetime]] = None
-    ) -> List[Dict[str, Any]]:
-        """Return recent entries as SQLite doesn't support vector search."""
-        logger.info("SQLite doesn't support vector search - falling back to returning recent entries")
-        try:
-            cursor = self.conn.cursor()
+    def create_conversation(self, title: Optional[str] = None, metadata: Optional[Dict] = None) -> str:
+        """
+        Create a new conversation.
+        
+        Args:
+            title: An optional title for the conversation
+            metadata: Optional metadata for the conversation
             
-            # Build where clause for filtering
-            where_clauses = []
-            params = []
-            
-            # Add entry type filter
-            if entry_types:
-                placeholders = ", ".join(["?" for _ in entry_types])
-                where_clauses.append(f"entry_type IN ({placeholders})")
-                params.extend([t.value for t in entry_types])
-            
-            # Add temporal filter
-            if temporal_filter:
-                if 'start' in temporal_filter:
-                    where_clauses.append("created_at >= ?")
-                    params.append(temporal_filter['start'].isoformat())
-                if 'end' in temporal_filter:
-                    where_clauses.append("created_at <= ?")
-                    params.append(temporal_filter['end'].isoformat())
-            
-            # Combine where clauses
-            where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-            
-            # Fallback query - just return most recent entries
-            sql = f'''
-            SELECT id, content, entry_type, created_at, metadata
-            FROM entries
-            {where_clause}
-            ORDER BY created_at DESC
-            LIMIT ?
-            '''
-            params.append(limit)
-            cursor.execute(sql, params)
-            
-            results = []
-            for row in cursor.fetchall():
-                results.append({
-                    "id": row['id'],
-                    "score": 0.5,  # Default score since we're not doing vector search
-                    "content": row['content'],
-                    "entry_type": row['entry_type'],
-                    "created_at": datetime.fromisoformat(row['created_at']),
-                    "metadata": json.loads(row['metadata'])
-                })
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error in vector search: {e}")
-            return []
+        Returns:
+            The ID of the newly created conversation
+        """
+        conversation_id = str(uuid.uuid4())
+        cursor = self.conn.cursor()
+        
+        now = datetime.now().isoformat()
+        title = title or f"Conversation {now}"
+        metadata_json = json.dumps(metadata or {})
+        
+        # Insert into fipa_conversations table using WORKING schema
+        cursor.execute(
+            """INSERT INTO fipa_conversations 
+               (conversation_id, title, start_time, end_time, created_at, updated_at, 
+                account_uuid, message_count, total_tokens, metadata) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (conversation_id, title, now, now, now, now, '', 0, 0, metadata_json)
+        )
+        
+        self.conn.commit()
+        logger.info(f"Conversation {conversation_id} created")
+        return conversation_id
     
-    async def get_recent_entries(
-        self, 
-        hours: Optional[int] = None,
-        entry_types: Optional[List[EntryType]] = None,
-        limit: int = 10
-    ) -> List[MSEntry]:
-        """Get recent entries from the store."""
-        try:
-            cursor = self.conn.cursor()
+    def end_conversation(self, conversation_id: str) -> None:
+        """
+        Mark a conversation as ended and update its metadata.
+        
+        Args:
+            conversation_id: The ID of the conversation to end
+        """
+        cursor = self.conn.cursor()
+        
+        now = datetime.now().isoformat()
+        
+        # Update the conversation with final counts
+        cursor.execute(
+            """UPDATE fipa_conversations 
+               SET end_time = ?, 
+                   updated_at = ?,
+                   message_count = (SELECT COUNT(*) FROM fipa_messages WHERE conversation_id = ?)
+               WHERE conversation_id = ?""",
+            (now, now, conversation_id, conversation_id)
+        )
+        
+        self.conn.commit()
+        logger.info(f"Conversation {conversation_id} ended")
+    
+    def get_conversation_info(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get conversation metadata.
+        
+        Args:
+            conversation_id: The ID of the conversation
             
-            # Build the query
-            query = '''
-            SELECT id, content, entry_type, created_at, metadata
-            FROM entries
-            '''
+        Returns:
+            Conversation metadata if found, otherwise None
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM fipa_conversations WHERE conversation_id = ?", (conversation_id,))
+        
+        row = cursor.fetchone()
+        if row is None:
+            return None
             
-            # Add conditions
-            conditions = []
-            params = []
+        column_names = [description[0] for description in cursor.description]
+        return dict(zip(column_names, row))
+    
+    def get_recent_conversations(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get recent conversations.
+        
+        Args:
+            limit: Maximum number of conversations to return
             
-            # Time filter
-            if hours is not None:
-                cutoff_time = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-                conditions.append("created_at >= ?")
-                params.append(cutoff_time)
+        Returns:
+            List of recent conversation metadata
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT * FROM fipa_conversations 
+               ORDER BY updated_at DESC 
+               LIMIT ?""",
+            (limit,)
+        )
+        
+        conversations = []
+        column_names = [description[0] for description in cursor.description]
+        
+        for row in cursor.fetchall():
+            conversations.append(dict(zip(column_names, row)))
             
-            # Entry type filter
-            if entry_types:
-                type_placeholders = ", ".join(["?" for _ in entry_types])
-                conditions.append(f"entry_type IN ({type_placeholders})")
-                params.extend([t.value for t in entry_types])
-            
-            # Add WHERE clause if we have conditions
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
-            
-            # Add order and limit
-            query += " ORDER BY created_at DESC LIMIT ?"
-            params.append(limit)
-            
-            # Execute query
-            cursor.execute(query, params)
-            
-            # Process results
-            entries = []
-            for row in cursor.fetchall():
-                # Create MSEntry directly
-                entries.append(MSEntry(
-                    id=row['id'],
-                    content=row['content'],
-                    entry_type=EntryType(row['entry_type']),
-                    created_at=datetime.fromisoformat(row['created_at']),
-                    metadata=json.loads(row['metadata'])
-                ))
-            
-            return entries
-            
-        except Exception as e:
-            logger.error(f"Error getting recent entries: {e}")
-            return []
+        return conversations
     
     async def close(self):
         """Close the database connection."""
@@ -292,3 +242,10 @@ class MSSQLiteStore:
         """Make sure connection is closed on deletion."""
         if hasattr(self, 'conn') and self.conn:
             self.conn.close()
+
+
+# Convenience function to get SQLite store instance
+def get_sqlite_store() -> MSSQLiteStore:
+    """Get a SQLite store instance using the configured path."""
+    import asyncio
+    return asyncio.run(MSSQLiteStore.create())

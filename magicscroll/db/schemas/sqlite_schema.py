@@ -13,54 +13,70 @@ class SQLiteSchema:
     
     @staticmethod
     def create_fipa_schema(db_path: Path) -> bool:
-        """Create the FIPA-ACL message schema."""
+        """Create the FIPA-ACL message schema that was actually working."""
         try:
             conn = sqlite3.connect(str(db_path))
             conn.execute("PRAGMA foreign_keys = ON")
             
-            # FIPA Conversations table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS fipa_conversations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id TEXT UNIQUE NOT NULL,
-                    title TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    message_count INTEGER DEFAULT 0,
-                    total_tokens INTEGER DEFAULT 0
-                )
-            """)
-            
-            # FIPA Messages table
+            # FIPA Messages table - using the WORKING schema from FIPAACLDatabase
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS fipa_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id TEXT NOT NULL,
-                    message_id TEXT UNIQUE NOT NULL,
-                    performative TEXT NOT NULL,
+                    message_id TEXT PRIMARY KEY,
+                    conversation_id TEXT,
                     sender TEXT NOT NULL,
                     receiver TEXT,
-                    content TEXT NOT NULL,
+                    speaker TEXT NOT NULL,
+                    content TEXT,
+                    performative TEXT NOT NULL,
+                    created_at TEXT,
+                    timestamp TEXT,
+                    reply_with TEXT,
+                    in_reply_to TEXT,
+                    reply_to TEXT,
+                    reply_by TEXT,
                     language TEXT DEFAULT 'en',
                     ontology TEXT,
                     protocol TEXT,
                     conversation_state TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    reply_to TEXT,
-                    in_reply_to TEXT,
-                    reply_with TEXT,
-                    reply_by TIMESTAMP,
                     encoding TEXT DEFAULT 'utf-8',
                     content_length INTEGER,
-                    FOREIGN KEY (conversation_id) REFERENCES fipa_conversations(conversation_id)
+                    metadata TEXT
                 )
             """)
             
-            # Performance indexes
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON fipa_messages(conversation_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_created_at ON fipa_messages(created_at)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender ON fipa_messages(sender)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON fipa_conversations(created_at)")
+            # FIPA Conversations table - using the WORKING schema from FIPAACLDatabase
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fipa_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    title TEXT,
+                    start_time TEXT,
+                    end_time TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    account_uuid TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    total_tokens INTEGER DEFAULT 0,
+                    metadata TEXT
+                )
+            """)
+            
+            # FIPA Agents table - from working schema
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fipa_agents (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    type TEXT,
+                    capabilities TEXT,
+                    metadata TEXT
+                )
+            """)
+            
+            # Performance indexes - using working field names
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fipa_messages_conversation ON fipa_messages(conversation_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fipa_messages_sender ON fipa_messages(sender)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fipa_messages_receiver ON fipa_messages(receiver)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fipa_messages_created_at ON fipa_messages(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_fipa_conversations_created_at ON fipa_conversations(created_at)")
             
             conn.commit()
             conn.close()
@@ -71,6 +87,17 @@ class SQLiteSchema:
         except Exception as e:
             logger.error(f"❌ SQLite schema creation failed: {e}")
             return False
+    
+    @staticmethod  
+    def get_connection(db_path: Path) -> sqlite3.Connection:
+        """Get a connection with schema guaranteed to exist."""
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        
+        # Ensure schema exists
+        SQLiteSchema.create_fipa_schema(db_path)
+        
+        return conn
     
     @staticmethod
     def drop_all_tables(db_path: Path, preserve_migration_table: str = None) -> bool:

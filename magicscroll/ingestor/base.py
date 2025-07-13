@@ -5,7 +5,8 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import logging
 
-from ..fipa_acl import FIPAACLDatabase, FIPAACLMessage
+from ..ms_message import MSMessage
+from ..ms_sqlite_store import MSSQLiteStore
 from ..ms_entry import MSEntry, EntryType
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ class BaseIngestor(ABC):
     
     Defines the common interface for ingesting data from various sources
     (Anthropic Claude exports, Google Takeout, OpenAI exports, etc.)
-    into the MagicScroll FIPA-ACL format.
+    into the MagicScroll format.
     """
     
     def __init__(self, magic_scroll=None, db_path: Optional[str] = None):
@@ -29,29 +30,30 @@ class BaseIngestor(ABC):
         """
         self.magic_scroll = magic_scroll
         
-        # Initialize FIPA database with proper fallback and debugging
+        # Initialize SQLite store with proper fallback and debugging
         logger.info(f"BaseIngestor init: magic_scroll={magic_scroll is not None}")
         if magic_scroll:
-            logger.info(f"MagicScroll.fipa_db={magic_scroll.fipa_db is not None}")
+            logger.info(f"MagicScroll.sqlite_store={magic_scroll.sqlite_store is not None}")
         
-        if magic_scroll and magic_scroll.fipa_db:
-            self.fipa_db = magic_scroll.fipa_db
-            logger.info("Using FIPA database from MagicScroll instance")
+        if magic_scroll and magic_scroll.sqlite_store:
+            self.sqlite_store = magic_scroll.sqlite_store
+            logger.info("Using SQLite store from MagicScroll instance")
         else:
-            # Fallback: create our own FIPA database
-            logger.info(f"Creating new FIPA database for ingestor with db_path={db_path}")
+            # Fallback: create our own SQLite store
+            logger.info(f"Creating new SQLite store for ingestor with db_path={db_path}")
             try:
-                self.fipa_db = FIPAACLDatabase(db_path)
-                logger.info("Successfully created new FIPA database for ingestor")
+                import asyncio
+                self.sqlite_store = asyncio.run(MSSQLiteStore.create(db_path))
+                logger.info("Successfully created new SQLite store for ingestor")
             except Exception as e:
-                logger.error(f"Failed to create FIPA database: {e}")
-                self.fipa_db = None
+                logger.error(f"Failed to create SQLite store: {e}")
+                self.sqlite_store = None
         
-        # Verify FIPA database is working
-        if self.fipa_db is None:
-            logger.error("CRITICAL: self.fipa_db is None after initialization!")
+        # Verify SQLite store is working
+        if self.sqlite_store is None:
+            logger.error("CRITICAL: self.sqlite_store is None after initialization!")
         else:
-            logger.info("FIPA database successfully initialized in BaseIngestor")
+            logger.info("SQLite store successfully initialized in BaseIngestor")
         
         # Tracking counters
         self.processed_conversations = 0
@@ -122,14 +124,14 @@ class BaseIngestor(ABC):
         else:
             return raw_sender  # Keep original for specific models
     
-    def convert_to_fipa_message(
+    def convert_to_ms_message(
         self, 
         message: Dict[str, Any], 
         conversation_id: str,
         previous_message_id: Optional[str] = None
-    ) -> FIPAACLMessage:
+    ) -> MSMessage:
         """
-        Convert a standardized message to FIPA-ACL format.
+        Convert a standardized message to MSMessage format.
         
         Args:
             message: Standardized message dictionary
@@ -137,7 +139,7 @@ class BaseIngestor(ABC):
             previous_message_id: Previous message ID for threading
             
         Returns:
-            FIPAACLMessage instance
+            MSMessage instance
         """
         sender = self.standardize_sender(message.get('sender', 'unknown'))
         content = self.extract_message_content(message)
@@ -156,8 +158,8 @@ class BaseIngestor(ABC):
             sender_id = sender
             receiver_id = 'user'
         
-        # Create FIPA message
-        fipa_msg = FIPAACLMessage(
+        # Create MS message
+        ms_msg = MSMessage(
             performative=performative,
             sender=sender_id,
             receiver=receiver_id,
@@ -168,18 +170,18 @@ class BaseIngestor(ABC):
         )
         
         # Add source-specific metadata
-        fipa_msg.metadata = {
+        ms_msg.metadata = {
             'source': self.source_name,
             'original_sender': message.get('sender', ''),
             'created_at': message.get('created_at', ''),
             **(message.get('metadata', {}))
         }
         
-        return fipa_msg
+        return ms_msg
     
     def process_conversation(self, conversation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Process a single conversation into FIPA-ACL messages.
+        Process a single conversation into MSMessage format.
         
         Args:
             conversation: Standardized conversation dictionary
@@ -189,9 +191,9 @@ class BaseIngestor(ABC):
             Or None if processing failed
         """
         try:
-            # Safety check for FIPA database
-            if self.fipa_db is None:
-                error_msg = "CRITICAL: Cannot process conversation - FIPA database is None"
+            # Safety check for SQLite store
+            if self.sqlite_store is None:
+                error_msg = "CRITICAL: Cannot process conversation - SQLite store is None"
                 logger.error(error_msg)
                 self.errors.append(error_msg)
                 return None
@@ -201,16 +203,14 @@ class BaseIngestor(ABC):
             
             # Always ensure we have a conversation ID
             if not conv_id:
-                conv_id = self.fipa_db.create_conversation(title=title)
-                logger.info(f"Created new FIPA conversation: {conv_id}")
-            else:
-                # Try to create conversation (will be ignored if it already exists)
-                try:
-                    self.fipa_db.create_conversation(title)
-                    logger.debug(f"FIPA conversation already exists or created: {conv_id}")
-                except Exception:
-                    # Conversation might already exist, that's fine
-                    pass
+                # Use MSSQLiteStore's conversation creation method
+                if hasattr(self.sqlite_store, 'create_conversation'):
+                    conv_id = self.sqlite_store.create_conversation(title=title)
+                    logger.info(f"Created new conversation: {conv_id}")
+                else:
+                    import uuid
+                    conv_id = str(uuid.uuid4())
+                    logger.info(f"Generated conversation ID: {conv_id}")
             
             messages = conversation.get('messages', [])
             
@@ -220,27 +220,31 @@ class BaseIngestor(ABC):
                 key=lambda m: m.get('created_at', '1970-01-01T00:00:00Z')
             )
             
-            fipa_messages = []
+            ms_messages = []
             previous_message_id = None
             
             for msg in sorted_messages:
                 try:
-                    fipa_msg = self.convert_to_fipa_message(
+                    ms_msg = self.convert_to_ms_message(
                         msg, conv_id, previous_message_id
                     )
                     
                     # Safety check before saving
-                    if self.fipa_db is None:
-                        error_msg = f"FIPA database became None while processing message {msg.get('id', 'unknown')}"
+                    if self.sqlite_store is None:
+                        error_msg = f"SQLite store became None while processing message {msg.get('id', 'unknown')}"
                         logger.error(error_msg)
                         self.errors.append(error_msg)
                         continue
                     
-                    # Save to FIPA database
-                    self.fipa_db.save_message(fipa_msg)
-                    fipa_messages.append(fipa_msg)
+                    # Save to SQLite store 
+                    if hasattr(self.sqlite_store, 'save_message'):
+                        self.sqlite_store.save_message(ms_msg)
+                    else:
+                        logger.warning("SQLite store doesn't have save_message method")
+                        
+                    ms_messages.append(ms_msg)
                     
-                    previous_message_id = fipa_msg.id
+                    previous_message_id = ms_msg.id
                     self.processed_messages += 1
                     
                 except Exception as e:
@@ -253,8 +257,8 @@ class BaseIngestor(ABC):
             return {
                 'conversation_id': conv_id,
                 'title': title,
-                'message_count': len(fipa_messages),
-                'messages': fipa_messages
+                'message_count': len(ms_messages),
+                'messages': ms_messages
             }
             
         except Exception as e:
@@ -289,18 +293,21 @@ class BaseIngestor(ABC):
             conversation_text = '\n\n'.join(formatted_lines)
             
             # Extract entities using GLiNER
-            from ..ms_entity import get_entity_extractor
-            extractor = get_entity_extractor()
-            entities_data = extractor.extract_for_conversation(conversation_text)
-            
-            logger.debug(f"Extracted {entities_data['entity_count']} entities for conversation {conversation_data['conversation_id']}")
+            try:
+                from ..ms_entity import get_entity_extractor
+                extractor = get_entity_extractor()
+                entities_data = extractor.extract_for_conversation(conversation_text)
+                logger.debug(f"Extracted {entities_data['entity_count']} entities for conversation {conversation_data['conversation_id']}")
+            except Exception as e:
+                logger.warning(f"Entity extraction failed: {e}")
+                entities_data = None
             
             # Create MSConversation entry with entities
             from ..ms_entry import MSConversation
             ms_entry = MSConversation(
                 content=conversation_text,
                 metadata={
-                    'fipa_conversation_id': conversation_data['conversation_id'],
+                    'live_conversation_id': conversation_data['conversation_id'],
                     'title': conversation_data['title'],
                     'message_count': conversation_data['message_count'],
                     'source': self.source_name,
@@ -391,7 +398,7 @@ class BaseIngestor(ABC):
             # Process each conversation
             for conversation in conversations:
                 try:
-                    # Convert to FIPA messages
+                    # Convert to MS messages
                     result = self.process_conversation(conversation)
                     if result:
                         processed_conversations.append(result)
@@ -453,5 +460,16 @@ class BaseIngestor(ABC):
     
     def close(self):
         """Clean up resources."""
-        if hasattr(self, 'fipa_db') and self.fipa_db:
-            self.fipa_db.close()
+        if hasattr(self, 'sqlite_store') and self.sqlite_store:
+            if hasattr(self.sqlite_store, 'close'):
+                # Don't use asyncio.run() as we're already in an async context
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # We're in an async context, don't call asyncio.run()
+                        logger.info("Skipping SQLite close - already in async context")
+                    else:
+                        asyncio.run(self.sqlite_store.close())
+                except Exception as e:
+                    logger.warning(f"Error closing SQLite store: {e}")

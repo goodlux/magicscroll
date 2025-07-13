@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""
+Quick script to reset the database and test.
+"""
+
+import asyncio
+import sys
+import os
+
+# Add the magicscroll directory to the path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from magicscroll import DatabaseCLI, MSMessage, MSSQLiteStore, MagicScroll
+
+async def reset_and_test():
+    """Reset database and test."""
+    print("🔄 Resetting database to fix schema...")
+    
+    # Reset database
+    db_cli = DatabaseCLI()
+    try:
+        # Force reset without confirmation for testing
+        db_cli.db_manager.reset_all(confirm=True)
+        print("✅ Database reset complete")
+    except Exception as e:
+        print(f"⚠️ Database reset had issues (might be OK): {e}")
+    
+    # Now test
+    print("\n🧪 Testing after reset...")
+    
+    # Test message creation
+    print("\n1. Testing MSMessage creation...")
+    try:
+        message = MSMessage(
+            performative="INFORM",
+            sender="user",
+            receiver="assistant", 
+            content="Hello, this is a test message!",
+            conversation_id="test-conversation"
+        )
+        print(f"✅ MSMessage created: {message}")
+    except Exception as e:
+        print(f"❌ MSMessage creation failed: {e}")
+        return
+    
+    # Test SQLite store
+    print("\n2. Testing MSSQLiteStore...")
+    try:
+        sqlite_store = await MSSQLiteStore.create()
+        print("✅ MSSQLiteStore created successfully")
+        
+        # Create a conversation
+        conv_id = sqlite_store.create_conversation("Test Conversation")
+        print(f"✅ Created conversation: {conv_id}")
+        
+        # Save a message
+        sqlite_store.save_message(message)
+        print("✅ Saved message to SQLite store")
+        
+        # Retrieve messages
+        messages = sqlite_store.get_conversation_messages(conv_id)
+        print(f"✅ Retrieved {len(messages)} messages")
+        
+        await sqlite_store.close()
+        print("✅ SQLite store closed")
+        
+    except Exception as e:
+        print(f"❌ MSSQLiteStore test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    print("\n🎉 Database reset and test successful!")
+
+if __name__ == "__main__":
+    asyncio.run(reset_and_test())

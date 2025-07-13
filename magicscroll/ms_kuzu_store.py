@@ -65,9 +65,12 @@ def store_entities_in_graph(entities: List[Dict[str, Any]], conversation_id: str
     counts = {"person": 0, "organization": 0, "technology": 0, "topic": 0}
     
     try:
-        # Import here to avoid circular imports
-        from .stores import storage
-        kuzu_conn = storage.kuzu
+        # Import from new location after cleanup
+        from .config import settings
+        import kuzu
+        
+        # Create Kuzu connection
+        kuzu_conn = kuzu.Connection(str(settings.kuzu_path / "kuzu.db"))
         
         # First, ensure MSEntry exists
         _store_ms_entry(kuzu_conn, entry_id, conversation_id, conversation_title)
@@ -356,8 +359,11 @@ def _store_topic_relationship(kuzu_conn, topic_normalized: str, entry_id: str, c
 def search_entities_by_entry(entry_id: str) -> Dict[str, List[Dict]]:
     """Find all entities mentioned in a specific MSEntry."""
     try:
-        from .stores import storage
-        kuzu_conn = storage.kuzu
+        from .config import settings
+        import kuzu
+        
+        # Create Kuzu connection
+        kuzu_conn = kuzu.Connection(str(settings.kuzu_path / "kuzu.db"))
         result = {"people": [], "organizations": [], "technologies": [], "topics": []}
         
         # Get people
@@ -410,8 +416,11 @@ def search_entities_by_entry(entry_id: str) -> Dict[str, List[Dict]]:
 def get_entity_stats() -> Dict[str, int]:
     """Get counts of entities by type using new schema."""
     try:
-        from .stores import storage
-        kuzu_conn = storage.kuzu
+        from .config import settings
+        import kuzu
+        
+        # Create Kuzu connection
+        kuzu_conn = kuzu.Connection(str(settings.kuzu_path / "kuzu.db"))
         stats = {}
         
         try:
@@ -454,8 +463,11 @@ def get_entity_stats() -> Dict[str, int]:
 def search_related_entries_by_entity(entity_name: str, entity_type: str, limit: int = 10) -> List[Dict]:
     """Find MSEntries related to a specific entity."""
     try:
-        from .stores import storage
-        kuzu_conn = storage.kuzu
+        from .config import settings
+        import kuzu
+        
+        # Create Kuzu connection
+        kuzu_conn = kuzu.Connection(str(settings.kuzu_path / "kuzu.db"))
         
         normalized_name = normalize_entity_name(entity_name)
         

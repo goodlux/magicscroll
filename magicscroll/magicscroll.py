@@ -7,7 +7,7 @@ from .ms_entry import MSEntry, EntryType, MSConversation
 from .ms_milvus_store import MSMilvusStore
 from .ms_sqlite_store import MSSQLiteStore
 from .ms_types import SearchResult
-from .fipa_acl import FIPAACLDatabase, FIPAACLMessage
+from .ms_message import MSMessage
 from .config import settings
 
 # Set up logging
@@ -20,7 +20,7 @@ class MagicScroll:
         """Initialize with config."""
         self.ms_store = None
         self.search_engine = None
-        self.fipa_db = None
+        self.sqlite_store = None
 
     @classmethod 
     async def create(cls, storage_type: str = "milvus") -> 'MagicScroll':
@@ -30,59 +30,50 @@ class MagicScroll:
         return magicscroll
     
     async def initialize(self, storage_type: str = "milvus") -> None:
-        """Initialize the components with better error handling."""
+        """Initialize the components with clean architecture."""
         logger.info(f"Initializing MagicScroll with {storage_type} storage...")
         
-        # STEP 1: Initialize FIPA database first (needed by ingestors)
-        # This is CRITICAL - if this fails, we can't proceed
-        logger.info("Initializing FIPA database...")
+        # STEP 1: Initialize SQLite store for live conversations AND MSEntries
+        logger.info("Initializing SQLite store for live conversations and entries...")
         try:
-            self.fipa_db = FIPAACLDatabase()
-            logger.info("FIPA database initialized successfully")
+            self.sqlite_store = await MSSQLiteStore.create()
+            logger.info("✅ SQLite store initialized successfully")
         except Exception as e:
-            logger.error(f"CRITICAL: FIPA database initialization failed: {e}")
+            logger.error(f"CRITICAL: SQLite store initialization failed: {e}")
             import traceback
-            logger.error(f"FIPA traceback: {traceback.format_exc()}")
-            # Don't set to None - raise the error so we know what's wrong
-            raise RuntimeError(f"Cannot proceed without FIPA database: {e}")
+            logger.error(f"SQLite store traceback: {traceback.format_exc()}")
+            raise RuntimeError(f"Cannot proceed without SQLite store: {e}")
         
-        # STEP 2: Initialize storage backends (less critical)
-        try:
-            from .stores import storage
-            logger.info("Initializing storage backends...")
-            storage.init_stores()
-            logger.info("Storage backends initialized")
-        except Exception as e:
-            logger.warning(f"Storage backend initialization failed (non-critical): {e}")
-            # Continue without storage backends
+        # STEP 2: Initialize the MS store for long-term vector search (if not SQLite-only)
+        if storage_type.lower() != "sqlite":
+            logger.info("Initializing MS store for long-term vector storage...")
+            try:
+                if storage_type.lower() == "milvus":
+                    logger.info("Creating MSMilvusStore...")
+                    self.ms_store = await MSMilvusStore.create()
+                    logger.info("✅ Using Milvus storage")
+                else:
+                    logger.warning(f"Unknown storage type {storage_type}, defaulting to Milvus")
+                    self.ms_store = await MSMilvusStore.create()
+                    logger.info("✅ Using Milvus storage (default)")
+                    
+                # Verify the store was created
+                if self.ms_store:
+                    logger.info(f"MS store successfully initialized: {type(self.ms_store).__name__}")
+                else:
+                    logger.error("MS store is None after creation!")
+                    
+            except Exception as e:
+                logger.error(f"MS store initialization failed: {e}")
+                import traceback
+                logger.error(f"MS store traceback: {traceback.format_exc()}")
+                logger.warning("Continuing with SQLite-only mode")
+                self.ms_store = None
+        else:
+            logger.info("Using SQLite-only mode - SQLite will handle both live and long-term storage")
+            self.ms_store = self.sqlite_store  # Use SQLite for everything
         
-        # STEP 3: Initialize the MS store (needed for vector search)
-        logger.info("Initializing MS store...")
-        try:
-            if storage_type.lower() == "sqlite":
-                logger.info("Creating MSSQLiteStore...")
-                self.ms_store = await MSSQLiteStore.create()
-                logger.info("✅ Using SQLite storage with vector capabilities")
-            else:
-                # Default to Milvus
-                logger.info("Creating MSMilvusStore...")
-                self.ms_store = await MSMilvusStore.create()
-                logger.info("✅ Using Milvus storage")
-                
-            # Verify the store was created
-            if self.ms_store:
-                logger.info(f"MS store successfully initialized: {type(self.ms_store).__name__}")
-            else:
-                logger.error("MS store is None after creation!")
-                
-        except Exception as e:
-            logger.error(f"MS store initialization failed: {e}")
-            import traceback
-            logger.error(f"MS store traceback: {traceback.format_exc()}")
-            logger.warning("Continuing without MS store - some features will be limited")
-            self.ms_store = None
-        
-        # STEP 4: Initialize the search engine (depends on MS store)
+        # STEP 3: Initialize the search engine (depends on MS store)
         try:
             if self.ms_store:
                 from .ms_search import MSSearch
@@ -96,14 +87,64 @@ class MagicScroll:
             self.search_engine = None
         
         # Verify critical components
-        if self.fipa_db is None:
-            raise RuntimeError("CRITICAL: FIPA database is None after initialization")
+        if self.sqlite_store is None:
+            raise RuntimeError("CRITICAL: SQLite store is None after initialization")
         
-        logger.info("MagicScroll ready to unroll!")
-        logger.info(f"Components status: fipa_db={self.fipa_db is not None}, ms_store={self.ms_store is not None}, search_engine={self.search_engine is not None}")
+        logger.info("🪄 MagicScroll ready to unroll!")
+        logger.info(f"Components status: sqlite_store={self.sqlite_store is not None}, ms_store={self.ms_store is not None}, search_engine={self.search_engine is not None}")
         
+    # ===============================================
+    # LIVE CONVERSATION METHODS (using SQLite store)
+    # ===============================================
+    
+    def create_live_conversation(self, title: Optional[str] = None, metadata: Optional[Dict] = None) -> str:
+        """Create a new live conversation."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
+            return ""
+        return self.sqlite_store.create_conversation(title, metadata)
+    
+    def save_live_message(self, message: MSMessage) -> None:
+        """Save a message to live storage."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
+            return
+        self.sqlite_store.save_message(message)
+    
+    def get_live_conversation_messages(self, conversation_id: str) -> List[MSMessage]:
+        """Get messages from a live conversation."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
+            return []
+        return self.sqlite_store.get_conversation_messages(conversation_id)
+    
+    def end_live_conversation(self, conversation_id: str) -> None:
+        """Mark a live conversation as ended."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
+            return
+        self.sqlite_store.end_conversation(conversation_id)
+    
+    def get_live_conversation_info(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Get live conversation metadata."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
+            return None
+        return self.sqlite_store.get_conversation_info(conversation_id)
+    
+    def get_recent_live_conversations(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent live conversations."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
+            return []
+        return self.sqlite_store.get_recent_conversations(limit)
+    
+    # =================================================
+    # LONG-TERM STORAGE METHODS (using MS stores)
+    # =================================================
+    
     async def save_ms_entry(self, entry: MSEntry) -> str:
-        """Save an entry through the store."""
+        """Save an entry to long-term storage."""
         if not self.ms_store:
             logger.warning("Cannot save entry - MagicScroll store not initialized")
             return entry.id  # Return ID but don't save
@@ -120,7 +161,7 @@ class MagicScroll:
             return entry.id
 
     async def get_ms_entry(self, entry_id: str) -> Optional[MSEntry]:
-        """Get an entry from the store."""
+        """Get an entry from long-term storage."""
         if not self.ms_store:
             logger.warning("Cannot retrieve entry - MagicScroll store not initialized")
             return None
@@ -143,7 +184,7 @@ class MagicScroll:
         temporal_filter: Optional[Dict[str, datetime]] = None,
         limit: int = 5
     ) -> List[SearchResult]:
-        """Search entries in the scroll using vector search."""
+        """Search entries in long-term storage using vector search."""
         if not self.search_engine:
             logger.warning("Search engine not available")
             return []
@@ -202,7 +243,7 @@ class MagicScroll:
         entry_types: Optional[List[EntryType]] = None,
         limit: int = 10
     ) -> List[MSEntry]:
-        """Get recent entries."""
+        """Get recent entries from long-term storage."""
         if not self.ms_store or not hasattr(self.ms_store, 'get_recent_entries'):
             logger.warning("Recent entries retrieval not available")
             return []
@@ -214,55 +255,51 @@ class MagicScroll:
             logger.error(f"Error retrieving recent entries: {e}")
             return []
 
-    # FIPA-related methods for scRAMble integration
-    def create_fipa_conversation(self, title: Optional[str] = None, metadata: Optional[Dict] = None) -> str:
-        """Create a new FIPA conversation."""
-        if not self.fipa_db:
-            logger.warning("FIPA database not initialized")
-            return ""
-        return self.fipa_db.create_conversation(title)
+    # ==================================================
+    # CONVERSATION LIFECYCLE (Live → Long-term)
+    # ==================================================
     
-    def save_fipa_message(self, message: FIPAACLMessage) -> None:
-        """Save a FIPA message."""
-        if not self.fipa_db:
-            logger.warning("FIPA database not initialized")
-            return
-        self.fipa_db.save_message(message)
-    
-    def get_fipa_conversation(self, conversation_id: str) -> List[FIPAACLMessage]:
-        """Get messages from a FIPA conversation."""
-        if not self.fipa_db:
-            logger.warning("FIPA database not initialized")
-            return []
-        return self.fipa_db.get_conversation_messages(conversation_id)
-        
-    async def save_fipa_conversation_to_ms(self, conversation_id: str, metadata: Optional[Dict] = None) -> str:
-        """Save FIPA conversation to MagicScroll long-term memory."""
-        if not self.fipa_db:
-            logger.warning("FIPA database not initialized")
+    async def archive_conversation(self, conversation_id: str, metadata: Optional[Dict] = None) -> str:
+        """Move a completed live conversation to long-term storage."""
+        if not self.sqlite_store:
+            logger.warning("SQLite store not initialized")
             return ""
             
-        messages = self.fipa_db.get_conversation_messages(conversation_id)
-        
-        # Format the conversation for storage
-        formatted_content = self._format_fipa_conversation(messages)
-        
-        # Create conversation entry
-        entry = MSConversation(
-            content=formatted_content,
-            metadata={
-                "fipa_conversation_id": conversation_id,
-                "message_count": len(messages),
-                "participants": list(set(msg.sender for msg in messages if msg.sender)),
-                **(metadata or {})
-            }
-        )
-        
-        # Add to the index
-        return await self.save_ms_entry(entry)
+        try:
+            # Get messages from live conversation
+            messages = self.sqlite_store.get_conversation_messages(conversation_id)
+            
+            if not messages:
+                logger.warning(f"No messages found for conversation {conversation_id}")
+                return ""
+            
+            # Get conversation info
+            conv_info = self.sqlite_store.get_conversation_info(conversation_id)
+            
+            # Format the conversation for storage
+            formatted_content = self._format_messages(messages)
+            
+            # Create conversation entry
+            entry = MSConversation(
+                content=formatted_content,
+                metadata={
+                    "live_conversation_id": conversation_id,
+                    "title": conv_info.get('title', 'Archived Conversation') if conv_info else 'Archived Conversation',
+                    "message_count": len(messages),
+                    "participants": list(set(msg.sender for msg in messages if msg.sender)),
+                    **(metadata or {})
+                }
+            )
+            
+            # Save to long-term storage
+            return await self.save_ms_entry(entry)
+            
+        except Exception as e:
+            logger.error(f"Error archiving conversation {conversation_id}: {e}")
+            return ""
     
-    def _format_fipa_conversation(self, messages: List[FIPAACLMessage]) -> str:
-        """Format FIPA messages into a storable conversation format."""
+    def _format_messages(self, messages: List[MSMessage]) -> str:
+        """Format messages into a storable conversation format."""
         formatted = []
         
         for msg in messages:
@@ -274,9 +311,9 @@ class MagicScroll:
 
     async def close(self) -> None:
         """Close connections."""
-        if self.ms_store and hasattr(self.ms_store, 'close'):
+        if self.ms_store and hasattr(self.ms_store, 'close') and self.ms_store != self.sqlite_store:
             await self.ms_store.close()
             logger.info("MagicScroll store connections closed")
-        if self.fipa_db:
-            self.fipa_db.close()
-            logger.info("FIPA database connection closed")
+        if self.sqlite_store:
+            await self.sqlite_store.close()
+            logger.info("SQLite store connection closed")
