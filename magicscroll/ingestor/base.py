@@ -142,7 +142,7 @@ class BaseIngestor(ABC):
             MSMessage instance
         """
         sender = self.standardize_sender(message.get('sender', 'unknown'))
-        content = self.extract_message_content(message)
+        content = message.get('content', '')  # Use already extracted content
         
         # Map to FIPA performatives
         if sender == 'human':

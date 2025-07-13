@@ -123,6 +123,14 @@ class EntityExtractor:
                     )
                     entities.append(entity)
             
+            # DEBUG: Print what GLiNER actually found
+            if entities:
+                print(f"DEBUG: GLiNER found {len(entities)} entities:")
+                for entity in entities:
+                    print(f"  - '{entity.text}' (type: {entity.label}, conf: {entity.confidence:.3f})")
+            else:
+                print(f"DEBUG: GLiNER found no entities")
+            
             logger.debug(f"Extracted {len(entities)} entities from text of length {len(text)}")
             return entities
             

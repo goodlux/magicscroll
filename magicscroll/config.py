@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     milvus_path: Optional[Path] = None
     sqlite_path: Optional[Path] = None
     kuzu_path: Optional[Path] = None
+    oxigraph_path: Optional[Path] = None
     
     # API settings
     host: str = "127.0.0.1"
@@ -40,6 +41,8 @@ class Settings(BaseSettings):
             self.sqlite_path = self.data_dir / "sqlite" / "magicscroll-sqlite.db"
         if self.kuzu_path is None:
             self.kuzu_path = self.data_dir / "kuzu"
+        if self.oxigraph_path is None:
+            self.oxigraph_path = self.data_dir / "oxigraph"
     
     def ensure_data_dir(self) -> None:
         """Create data directory if it doesn't exist."""
@@ -47,6 +50,7 @@ class Settings(BaseSettings):
         self.milvus_path.parent.mkdir(parents=True, exist_ok=True)
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         self.kuzu_path.mkdir(parents=True, exist_ok=True)
+        self.oxigraph_path.mkdir(parents=True, exist_ok=True)
     
     def get_milvus_path(self) -> Path:
         """Get the Milvus database path."""
@@ -59,6 +63,10 @@ class Settings(BaseSettings):
     def get_kuzu_path(self) -> Path:
         """Get the Kuzu graph database path."""
         return self.kuzu_path
+    
+    def get_oxigraph_path(self) -> Path:
+        """Get the Oxigraph RDF store path."""
+        return self.oxigraph_path
 
 
 # Global settings instance

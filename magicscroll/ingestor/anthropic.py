@@ -7,6 +7,7 @@ from pathlib import Path
 import logging
 
 from .base import BaseIngestor
+from ..ms_kuzu_store import store_conversation_in_kuzu
 
 logger = logging.getLogger(__name__)
 
@@ -123,19 +124,52 @@ class AnthropicIngestor(BaseIngestor):
         Returns:
             Extracted text content
         """
+        message_id = message.get('uuid', 'unknown')
+        
+        # ENHANCED DEBUGGING: Print full message structure for first few messages
+        if not hasattr(self, '_debug_count'):
+            self._debug_count = 0
+        
+        if self._debug_count < 5:  # Show first 5 messages in detail
+            logger.warning(f"\n=== DEBUGGING MESSAGE {self._debug_count + 1} ===")
+            logger.warning(f"Message keys: {list(message.keys())}")
+            logger.warning(f"Full message structure: {json.dumps(message, indent=2)[:1000]}...")
+            self._debug_count += 1
+        
         # Try text field first (direct text)
-        if 'text' in message and message['text']:
-            return message['text']
+        text_field = message.get('text')
+        if text_field and isinstance(text_field, str) and text_field.strip():
+            logger.info(f"✅ Using 'text' field for message {message_id[:8]}...: {len(text_field)} chars")
+            return text_field.strip()
         
         # Fallback to content array (structured content)
-        if 'content' in message and isinstance(message['content'], list):
+        content_field = message.get('content')
+        if content_field and isinstance(content_field, list):
             text_parts = []
-            for content_block in message['content']:
-                if content_block.get('type') == 'text' and content_block.get('text'):
-                    text_parts.append(content_block['text'])
+            for i, content_block in enumerate(content_field):
+                if (isinstance(content_block, dict) and 
+                    content_block.get('type') == 'text' and 
+                    content_block.get('text')):
+                    
+                    block_text = content_block.get('text')
+                    if isinstance(block_text, str) and block_text.strip():
+                        text_parts.append(block_text.strip())
+                        if self._debug_count <= 5:
+                            logger.warning(f"  Found text in content[{i}]: {repr(block_text[:100])}")
             
             if text_parts:
-                return '\n'.join(text_parts)
+                result = '\n'.join(text_parts)
+                logger.info(f"✅ Using 'content' array for message {message_id[:8]}...: {len(result)} chars from {len(text_parts)} parts")
+                return result
+        
+        # Enhanced debug logging for problematic messages
+        logger.warning(f"❌ No content extracted for message {message_id[:8]}... (sender: {message.get('sender', 'unknown')})")
+        if self._debug_count <= 5:
+            logger.warning(f"  Available fields: {list(message.keys())}")
+            logger.warning(f"  Text field: {type(text_field)} = {repr(text_field)}")
+            logger.warning(f"  Content field: {type(content_field)} = {repr(content_field) if content_field else None}")
+            if isinstance(content_field, list) and content_field:
+                logger.warning(f"  Content[0] structure: {json.dumps(content_field[0], indent=2)[:200]}...")
         
         # Last resort - empty string
         return ""
@@ -159,6 +193,16 @@ class AnthropicIngestor(BaseIngestor):
         else:
             # Keep original for specific Claude models
             return raw_sender
+    
+    def store_conversation_in_kuzu(self, conversation: Dict[str, Any]) -> Dict[str, int]:
+        """Store conversation, attachments, and artifacts in Kuzu graph database."""
+        try:
+            result = store_conversation_in_kuzu(conversation)
+            logger.info(f"✅ Stored conversation {conversation.get('id', 'unknown')[:8]}... in Kuzu: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to store conversation in Kuzu: {e}")
+            return {"conversations": 0, "attachments": 0, "artifacts": 0, "errors": 1}
 
 
 # Convenience function for backward compatibility

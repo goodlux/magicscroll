@@ -4,7 +4,7 @@ import logging
 from typing import Dict
 from pathlib import Path
 
-from .schemas import SQLiteSchema, MilvusSchema, KuzuSchema
+from .schemas import SQLiteSchema, MilvusSchema, KuzuSchema, OxigraphSchema
 from .migration_manager import MigrationManager
 from ..config import settings
 
@@ -27,7 +27,8 @@ class DatabaseManager:
         results = {
             "sqlite": self._initialize_sqlite(),
             "milvus": self._initialize_milvus(),
-            "kuzu": self._initialize_kuzu()
+            "kuzu": self._initialize_kuzu(),
+            "oxigraph": self._initialize_oxigraph()
         }
         
         if all(results.values()):
@@ -74,6 +75,18 @@ class DatabaseManager:
         self.migration_manager.mark_applied(migration_name, "kuzu", success)
         return success
     
+    def _initialize_oxigraph(self) -> bool:
+        """Initialize Oxigraph RDF store."""
+        migration_name = "001_create_rdf_store"
+        
+        if self.migration_manager.is_applied(migration_name, "oxigraph"):
+            logger.info("Oxigraph store already applied")
+            return True
+        
+        success = OxigraphSchema.create_rdf_store(settings.oxigraph_path)
+        self.migration_manager.mark_applied(migration_name, "oxigraph", success)
+        return success
+    
     def reset_all(self, confirm: bool = False) -> Dict[str, bool]:
         """Reset all database schemas (drop and recreate)."""
         if not confirm:
@@ -90,7 +103,7 @@ class DatabaseManager:
         # Combine results
         results = {
             db: drop_results.get(db, False) and create_results.get(db, False)
-            for db in ["sqlite", "milvus", "kuzu"]
+            for db in ["sqlite", "milvus", "kuzu", "oxigraph"]
         }
         
         if all(results.values()):
@@ -111,7 +124,8 @@ class DatabaseManager:
                 preserve_migration_table=self.migration_manager.table_name
             ),
             "milvus": MilvusSchema.drop_all_collections(settings.milvus_path),
-            "kuzu": KuzuSchema.drop_all_data(settings.kuzu_path)
+            "kuzu": KuzuSchema.drop_all_data(settings.kuzu_path),
+            "oxigraph": OxigraphSchema.drop_all_data(settings.oxigraph_path)
         }
         
         # Clear migration history
@@ -125,6 +139,7 @@ class DatabaseManager:
             "sqlite": SQLiteSchema.get_stats(settings.sqlite_path),
             "milvus": MilvusSchema.get_stats(settings.milvus_path),
             "kuzu": KuzuSchema.get_stats(settings.kuzu_path),
+            "oxigraph": OxigraphSchema.get_stats(settings.oxigraph_path),
             "migrations": self.migration_manager.get_history_stats()
         }
     
@@ -135,5 +150,6 @@ class DatabaseManager:
         return {
             "sqlite": stats["sqlite"]["status"] == "active",
             "milvus": stats["milvus"]["status"] == "active", 
-            "kuzu": stats["kuzu"]["status"] == "active"
+            "kuzu": stats["kuzu"]["status"] == "active",
+            "oxigraph": stats["oxigraph"]["status"] == "active"
         }

@@ -3,7 +3,7 @@
 from .database_manager import DatabaseManager
 from .database_cli import DatabaseCLI
 from .migration_manager import MigrationManager
-from .schemas import SQLiteSchema, MilvusSchema, KuzuSchema
+from .schemas import SQLiteSchema, MilvusSchema, KuzuSchema, OxigraphSchema
 
 __all__ = [
     "DatabaseManager",
@@ -11,5 +11,6 @@ __all__ = [
     "MigrationManager",
     "SQLiteSchema",
     "MilvusSchema",
-    "KuzuSchema"
+    "KuzuSchema",
+    "OxigraphSchema"
 ]

@@ -260,7 +260,7 @@ class MagicScroll:
     # ==================================================
     
     async def archive_conversation(self, conversation_id: str, metadata: Optional[Dict] = None) -> str:
-        """Move a completed live conversation to long-term storage."""
+        """Move a completed live conversation to long-term storage with entity extraction."""
         if not self.sqlite_store:
             logger.warning("SQLite store not initialized")
             return ""
@@ -279,7 +279,18 @@ class MagicScroll:
             # Format the conversation for storage
             formatted_content = self._format_messages(messages)
             
-            # Create conversation entry
+            # Extract entities using the same pipeline as ingestion
+            entities_data = None
+            try:
+                from .ms_entity import get_entity_extractor
+                extractor = get_entity_extractor()
+                entities_data = extractor.extract_for_conversation(formatted_content)
+                logger.debug(f"Extracted {entities_data['entity_count']} entities for conversation {conversation_id}")
+            except Exception as e:
+                logger.warning(f"Entity extraction failed: {e}")
+                entities_data = None
+            
+            # Create conversation entry with entities
             entry = MSConversation(
                 content=formatted_content,
                 metadata={
@@ -287,12 +298,46 @@ class MagicScroll:
                     "title": conv_info.get('title', 'Archived Conversation') if conv_info else 'Archived Conversation',
                     "message_count": len(messages),
                     "participants": list(set(msg.sender for msg in messages if msg.sender)),
+                    "entities": entities_data['entities_by_type'] if entities_data else {},
+                    "entity_count": entities_data['entity_count'] if entities_data else 0,
+                    "entity_summary": extractor.get_entity_summary(entities_data) if entities_data else 'No entities extracted',
                     **(metadata or {})
                 }
             )
             
-            # Save to long-term storage
-            return await self.save_ms_entry(entry)
+            # Save to long-term storage (Milvus)
+            entry_id = await self.save_ms_entry(entry)
+            
+            # Store entities in Kuzu graph database (same as ingestion)
+            if entities_data:
+                try:
+                    from .ms_kuzu_store import store_entities_in_graph
+                    
+                    # Convert entity data to GLiNER format for Kuzu storage
+                    gliner_entities = []
+                    if 'entities' in entities_data:
+                        for entity in entities_data['entities']:
+                            gliner_entities.append({
+                                'text': entity.text,
+                                'label': entity.label,
+                                'score': entity.confidence,
+                                'start': entity.start,
+                                'end': entity.end
+                            })
+                    
+                    entity_counts = store_entities_in_graph(
+                        gliner_entities,
+                        conversation_id,
+                        entry_id,
+                        conv_info.get('title', 'Archived Conversation') if conv_info else 'Archived Conversation'
+                    )
+                    
+                    logger.info(f"Stored entities in graph: {entity_counts}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to store entities in graph: {e}")
+            
+            return entry_id
             
         except Exception as e:
             logger.error(f"Error archiving conversation {conversation_id}: {e}")

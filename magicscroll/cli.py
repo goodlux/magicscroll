@@ -186,6 +186,10 @@ class MagicScrollCLI:
                 shutil.rmtree(settings.kuzu_path)
                 print(f"✅ Deleted Kuzu database: {settings.kuzu_path}")
                 
+            if settings.oxigraph_path.exists():
+                shutil.rmtree(settings.oxigraph_path)
+                print(f"✅ Deleted Oxigraph store: {settings.oxigraph_path}")
+                
         except Exception as e:
             print(f"⚠️  Error during cleanup: {e}")
         
@@ -322,6 +326,7 @@ class MagicScrollCLI:
         
         print(f"\n💾 Database location: {settings.sqlite_path}")
         print(f"🔍 Milvus location: {settings.milvus_path}")
+        print(f"🌐 Oxigraph location: {settings.oxigraph_path}")
         
         # Show comprehensive stats via migration system
         stats = self.migration_cli.db_manager.get_stats()
@@ -340,6 +345,15 @@ class MagicScrollCLI:
             print(f"   - Technologies: {kuzu_stats.get('technologies', 0)}")
             print(f"   - Topics: {kuzu_stats.get('topics', 0)}")
             print(f"   - MS Entries: {kuzu_stats.get('ms_entries', 0)}")
+        
+        oxigraph_stats = stats.get("oxigraph", {})
+        if oxigraph_stats.get("status") == "active":
+            print(f"🌐 RDF Store (Oxigraph):")
+            print(f"   - Total triples: {oxigraph_stats.get('total_triples', 0)}")
+            print(f"   - Named graphs: {oxigraph_stats.get('graph_count', 0)}")
+            if oxigraph_stats.get('graphs'):
+                for graph, count in list(oxigraph_stats['graphs'].items())[:3]:
+                    print(f"   - {graph}: {count} triples")
         
         print("="*60)
     
