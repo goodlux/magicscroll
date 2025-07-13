@@ -10,13 +10,13 @@ from pymilvus import MilvusClient, DataType
 import pymilvus
 
 from .ms_entry import MSEntry, EntryType
-from .config import Config
+from .config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
 # Default Milvus database file path from config
-DEFAULT_DB_PATH = str(Config().get_milvus_path())
+DEFAULT_DB_PATH = str(settings.get_milvus_path())
 
 class MSMilvusStore:
     """Milvus Lite storage for MagicScroll with vector search capabilities.
@@ -59,7 +59,8 @@ class MSMilvusStore:
     def _ensure_directory_exists(self):
         """Make sure the directory for the database exists."""
         db_dir = os.path.dirname(self.db_path)
-        os.makedirs(db_dir, exist_ok=True)
+        if db_dir:  # Only create if there's a directory part
+            os.makedirs(db_dir, exist_ok=True)
     
     def _init_collections(self):
         """Initialize or verify Milvus collections."""
@@ -67,19 +68,19 @@ class MSMilvusStore:
             # Check if conversations collection exists
             collections = self.client.list_collections()
             
-            # Create conversations collection if it doesn't exist
-            if "conversations" not in collections:
-                logger.info("Creating 'conversations' collection")
+            # Create ms_entries collection if it doesn't exist
+            if "ms_entries" not in collections:
+                logger.info("Creating 'ms_entries' collection")
                 
                 # Super simple collection creation - just like example
                 self.client.create_collection(
-                    collection_name="conversations",
+                    collection_name="ms_entries",
                     dimension=384  # vector dimension
                 )
                 
-                logger.info("Milvus collection created successfully")
+                logger.info("Milvus ms_entries collection created successfully")
             else:
-                logger.info("Milvus collection 'conversations' already exists")
+                logger.info("Milvus collection 'ms_entries' already exists")
             
         except Exception as e:
             logger.error(f"Error initializing Milvus collections: {e}")
@@ -296,7 +297,7 @@ class MSMilvusStore:
             
             # Simple insert without any frills
             result = self.client.insert(
-                collection_name="conversations",
+                collection_name="ms_entries",
                 data=data
             )
             
@@ -328,7 +329,7 @@ class MSMilvusStore:
             
             # Query from Milvus
             results = self.client.query(
-                collection_name="conversations",
+                collection_name="ms_entries",
                 filter=f'id == {int_id}',
                 output_fields=["id", "orig_id", "content", "entry_type", "created_at", "metadata"]
             )
@@ -374,7 +375,7 @@ class MSMilvusStore:
             
             # Delete from Milvus
             result = self.client.delete(
-                collection_name="conversations",
+                collection_name="ms_entries",
                 filter=f'id == {int_id}'
             )
             
@@ -413,7 +414,7 @@ class MSMilvusStore:
             
             # Ultra-simple search just like example
             search_results = self.client.search(
-                collection_name="conversations",
+                collection_name="ms_entries",
                 data=[query_embedding],
                 limit=limit,
                 output_fields=["id", "orig_id", "content", "entry_type", "created_at", "metadata"]
@@ -552,7 +553,7 @@ class MSMilvusStore:
                             filter_expr = ' || '.join(type_filters)
                         
                         fallback_results = self.client.query(
-                            collection_name="conversations",
+                            collection_name="ms_entries",
                             filter=filter_expr if filter_expr else None,
                             output_fields=["id", "orig_id", "content", "entry_type", "created_at", "metadata"],
                             limit=limit
@@ -643,7 +644,7 @@ class MSMilvusStore:
             
             # Query recent entries
             results = self.client.query(
-                collection_name="conversations",
+                collection_name="ms_entries",
                 filter=expr if expr else None,
                 output_fields=["id", "orig_id", "content", "entry_type", "created_at", "metadata"],
                 limit=limit

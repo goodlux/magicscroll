@@ -14,7 +14,7 @@ magicscroll
 MagicScroll provides a unified storage layer that combines three complementary database technologies to handle different aspects of personal AI data:
 
 - **Milvus-lite** - Vector embeddings for semantic search across documents, conversations, and media
-- **Oxigraph** - RDF triple store for knowledge graphs, relationships, and structured metadata  
+- **Kuzu** - graph store for knowledge graphs, relationships, and structured metadata  
 - **SQLite** - Relational data for user preferences, chat history, and application state
 
 ## Architecture

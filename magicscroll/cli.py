@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MagicScroll CLI - Command line interface for ingesting conversation data."""
+"""MagicScroll CLI - Command line interface with clean database management."""
 
 import os
 import sys
@@ -17,6 +17,7 @@ if __name__ == "__main__" and __package__ is None:
 
 from magicscroll.ingestor import AnthropicIngestor
 from magicscroll.config import settings
+from magicscroll.db import DatabaseCLI
 
 # Set up logging
 logging.basicConfig(
@@ -25,27 +26,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class MagicScrollCLI:
     """Command line interface for MagicScroll."""
     
     def __init__(self):
         """Initialize the CLI."""
         self.default_anthropic_dir = "/Users/rob/repos/anthropic"
+        self.migration_cli = DatabaseCLI()
     
     def print_banner(self):
         """Print the MagicScroll banner."""
-        print("=" * 50)
+        print("=" * 60)
         print("🪄📜 Welcome to MagicScroll 🪄📜")
-        print("=" * 50)
+        print("   Your AI Conversation Memory & Context System")
+        print("=" * 60)
         print()
     
     def print_menu(self):
         """Print the main menu."""
-        print("Select an option:")
-        print("1) Ingest Anthropic Claude archive")
-        print("2) Ingest Google Takeout (placeholder)")
-        print("3) Ingest Other... (placeholder)")
-        print("4) Exit")
+        print("🎯 Main Menu:")
+        print("1) 🔄 Drop/Recreate Database")
+        print("2) 📥 Ingest Anthropic Archive")
+        print("3) 🚧 Ingest Other Sources (coming soon)")
+        print("4) 🚪 Exit")
         print()
     
     def get_user_choice(self) -> str:
@@ -56,7 +60,7 @@ class MagicScrollCLI:
                 if choice in ['1', '2', '3', '4']:
                     return choice
                 else:
-                    print("❌ Invalid choice. Please enter 1, 2, 3, or 4.")
+                    print("❌ Invalid choice. Please enter 1-4.")
             except KeyboardInterrupt:
                 print("\n👋 Goodbye!")
                 sys.exit(0)
@@ -154,10 +158,59 @@ class MagicScrollCLI:
             return count
         except Exception:
             return 0
+
+    def drop_recreate_database(self):
+        """Drop and recreate all databases."""
+        print("\n⚠️  WARNING: This will completely delete all data!")
+        print("This action cannot be undone.")
+        print()
+        
+        confirm = input("Are you sure you want to drop and recreate the database? (yes/no): ").strip().lower()
+        if confirm not in ['yes', 'y']:
+            print("❌ Operation cancelled")
+            return
+            
+        print("\n🗑️  Dropping existing databases...")
+        
+        # Drop databases
+        try:
+            if settings.sqlite_path.exists():
+                settings.sqlite_path.unlink()
+                print(f"✅ Deleted SQLite database: {settings.sqlite_path}")
+            
+            if settings.milvus_path.exists():
+                settings.milvus_path.unlink()
+                print(f"✅ Deleted Milvus database: {settings.milvus_path}")
+                
+            if settings.kuzu_path.exists():
+                shutil.rmtree(settings.kuzu_path)
+                print(f"✅ Deleted Kuzu database: {settings.kuzu_path}")
+                
+        except Exception as e:
+            print(f"⚠️  Error during cleanup: {e}")
+        
+        print("\n🔧 Recreating databases...")
+        results = self.migration_cli.db_manager.initialize_all()
+        
+        if all(results.values()):
+            print("✅ Databases recreated successfully!")
+        else:
+            print("❌ Some databases failed to initialize:")
+            for db_name, success in results.items():
+                status = "✅" if success else "❌"
+                print(f"   {status} {db_name}")
     
     async def ingest_anthropic_archive(self):
-        """Handle Anthropic archive ingestion."""
+        """Handle Anthropic archive ingestion with proper initialization."""
         print("\n🔍 Looking for Anthropic archives...")
+        
+        # First, ensure databases are initialized
+        print("🔧 Ensuring databases are initialized...")
+        results = self.migration_cli.db_manager.initialize_all()
+        
+        if not all(results.values()):
+            print("❌ Database initialization failed. Please run 'Drop/Recreate Database' first.")
+            return
         
         # Find latest archive
         latest_archive = self.find_latest_anthropic_archive(self.default_anthropic_dir)
@@ -190,14 +243,20 @@ class MagicScrollCLI:
             return
         
         try:
-            # Run ingestion
+            # Run ingestion with clean architecture
             print("🪄 Starting ingestion...")
             
-            ingestor = AnthropicIngestor()
+            from magicscroll.magicscroll import MagicScroll
+            
+            print("🚀 Initializing MagicScroll with vector store...")
+            
+            magic_scroll = await MagicScroll.create(storage_type="milvus")
+            
+            ingestor = AnthropicIngestor(magic_scroll=magic_scroll)
             
             result = await ingestor.ingest(
                 str(conversations_path),
-                create_ms_entries=False,  # Just FIPA for now
+                create_ms_entries=True,  # Enable MSEntry creation for Milvus
                 limit_conversations=None  # Ingest all
             )
             
@@ -208,20 +267,31 @@ class MagicScrollCLI:
             # Report results
             self.print_ingestion_results(result, existing_count)
             
+            # Clean shutdown
+            await magic_scroll.close()
             ingestor.close()
             
         except Exception as e:
             print(f"❌ Ingestion failed: {e}")
+            logger.exception("Ingestion error details:")
+            
             # Clean up temp file on error
             if conversations_path and conversations_path.exists():
                 temp_dir = conversations_path.parent
                 shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            # Clean up MagicScroll if it was created
+            if 'magic_scroll' in locals():
+                try:
+                    await magic_scroll.close()
+                except:
+                    pass
     
     def print_ingestion_results(self, result: dict, existing_count: int):
         """Print formatted ingestion results."""
-        print("\n" + "="*50)
+        print("\n" + "="*60)
         print("📊 INGESTION COMPLETE")
-        print("="*50)
+        print("="*60)
         
         if result['success']:
             print("✅ Status: SUCCESS")
@@ -231,6 +301,7 @@ class MagicScrollCLI:
         print(f"📁 Source: {result['source']}")
         print(f"📋 Conversations processed: {result['processed_conversations']}")
         print(f"💬 Messages processed: {result['processed_messages']}")
+        print(f"📄 MS Entries created: {result.get('ms_entries_created', 0)}")
         
         if result['errors'] > 0:
             print(f"⚠️  Errors: {result['errors']}")
@@ -250,7 +321,27 @@ class MagicScrollCLI:
         print(f"   - Existing conversations: {existing_count}")
         
         print(f"\n💾 Database location: {settings.sqlite_path}")
-        print("="*50)
+        print(f"🔍 Milvus location: {settings.milvus_path}")
+        
+        # Show comprehensive stats via migration system
+        stats = self.migration_cli.db_manager.get_stats()
+        
+        milvus_stats = stats.get("milvus", {})
+        if milvus_stats.get("status") == "active":
+            print(f"🔍 Vector Search (Milvus):")
+            print(f"   - MS Entries: {milvus_stats.get('ms_entries_count', 0)}")
+            print(f"   - Collections: {', '.join(milvus_stats.get('collections', []))}")
+        
+        kuzu_stats = stats.get("kuzu", {})
+        if kuzu_stats.get("status") == "active":
+            print(f"🕸️  Knowledge Graph (Kuzu):")
+            print(f"   - Persons: {kuzu_stats.get('persons', 0)}")
+            print(f"   - Organizations: {kuzu_stats.get('organizations', 0)}")
+            print(f"   - Technologies: {kuzu_stats.get('technologies', 0)}")
+            print(f"   - Topics: {kuzu_stats.get('topics', 0)}")
+            print(f"   - MS Entries: {kuzu_stats.get('ms_entries', 0)}")
+        
+        print("="*60)
     
     def handle_placeholder_option(self, option_name: str):
         """Handle placeholder menu options."""
@@ -268,11 +359,19 @@ class MagicScrollCLI:
             choice = self.get_user_choice()
             
             if choice == '1':
-                await self.ingest_anthropic_archive()
+                # Drop/Recreate Database
+                self.drop_recreate_database()
+                input("\nPress Enter to continue...")
+                
             elif choice == '2':
-                self.handle_placeholder_option("Google Takeout ingestion")
+                # Ingest Anthropic Archive
+                await self.ingest_anthropic_archive()
+                input("\nPress Enter to continue...")
+                
             elif choice == '3':
+                # Ingest Other Sources
                 self.handle_placeholder_option("Other data source ingestion")
+                
             elif choice == '4':
                 print("\n👋 Goodbye!")
                 break

@@ -12,11 +12,14 @@ References:
 import sqlite3
 import json
 import uuid
+import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 class FIPAACLMessage:
     """FIPA ACL Message implementation based on FIPA standards."""
@@ -92,13 +95,19 @@ class FIPAACLMessage:
             'conversation_id': self.conversation_id,
             'sender': self.sender,
             'receiver': self.receiver,
-            'speaker': self.sender,  # Use sender as speaker for compatibility
             'content': self.content,
             'performative': self.performative,
-            'timestamp': self.created_at,
-            'reply_with': self.reply_with,
+            'created_at': self.created_at,
+            'reply_to': self.reply_to,
             'in_reply_to': self.in_reply_to,
-            'metadata': json.dumps(self.metadata)
+            'reply_with': self.reply_with,
+            'reply_by': self.reply_by if hasattr(self, 'reply_by') else None,
+            'language': self.language if hasattr(self, 'language') else 'en',
+            'ontology': self.ontology if hasattr(self, 'ontology') else None,
+            'protocol': self.protocol if hasattr(self, 'protocol') else None,
+            'conversation_state': getattr(self, 'conversation_state', None),
+            'encoding': getattr(self, 'encoding', 'utf-8'),
+            'content_length': len(self.content) if self.content else 0
         }
     
     @classmethod
@@ -116,7 +125,10 @@ class FIPAACLMessage:
             message_id=data.get('message_id')  # Use message_id from existing schema
         )
         
-        if 'timestamp' in data:
+        # Handle timestamp field (migration manager uses created_at)
+        if 'created_at' in data:
+            msg.created_at = data['created_at']
+        elif 'timestamp' in data:
             msg.created_at = data['timestamp']
             
         # Handle metadata if present
@@ -139,21 +151,71 @@ class FIPAACLDatabase:
         Args:
             db_path: Path to the SQLite database file, defaults to magicscroll sqlite path
         """
+        logger.info(f"FIPAACLDatabase init: db_path={db_path}")
+        
         if db_path is None:
             db_path = settings.sqlite_path
+            logger.info(f"Using default SQLite path: {db_path}")
             
         self.db_path = Path(db_path)
+        logger.info(f"Final db_path: {self.db_path}")
         
         # Ensure parent directory exists
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Ensured parent directory exists: {self.db_path.parent}")
+        except Exception as e:
+            logger.error(f"Failed to create parent directory: {e}")
+            raise
         
         # Initialize database
-        self.conn = sqlite3.connect(str(self.db_path))
-        self._create_tables()
+        try:
+            logger.info(f"Connecting to SQLite database: {self.db_path}")
+            self.conn = sqlite3.connect(str(self.db_path))
+            logger.info("SQLite connection established")
+        except Exception as e:
+            logger.error(f"Failed to connect to SQLite: {e}")
+            raise
+            
+        try:
+            self._create_tables()
+            logger.info("FIPA tables created/verified successfully")
+        except Exception as e:
+            logger.error(f"Failed to create FIPA tables: {e}")
+            raise
     
     def _create_tables(self) -> None:
         """Create the necessary tables if they don't exist."""
         cursor = self.conn.cursor()
+        
+        # Check if tables already exist (probably created by migration manager)
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('fipa_conversations', 'fipa_messages')")
+        existing_tables = [row[0] for row in cursor.fetchall()]
+        
+        # If migration manager already created the tables, don't recreate them
+        if 'fipa_conversations' in existing_tables and 'fipa_messages' in existing_tables:
+            logger.info("FIPA tables already exist (created by migration manager)")
+            # Just add indexes if they don't exist
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_fipa_messages_conversation
+            ON fipa_messages(conversation_id)
+            ''')
+            
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_fipa_messages_sender
+            ON fipa_messages(sender)
+            ''')
+            
+            cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_fipa_messages_receiver
+            ON fipa_messages(receiver)
+            ''')
+            
+            self.conn.commit()
+            return
+        
+        # Create tables with fallback schema (for standalone usage)
+        logger.info("Creating FIPA tables with standalone schema")
         
         # Create message table - use existing schema to match claude_ingestor.py
         cursor.execute('''

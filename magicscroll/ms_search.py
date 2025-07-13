@@ -9,7 +9,7 @@ from .ms_types import SearchResult
 import logging
 
 if TYPE_CHECKING:
-    from .magic_scroll import MagicScroll
+    from .magicscroll import MagicScroll
 
 logger = logging.getLogger(__name__)
 

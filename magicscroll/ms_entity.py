@@ -1,147 +1,202 @@
-"""Entity extraction and management for MagicScroll."""
-from typing import List, Set, Dict, Any, Optional
-import re
-from dataclasses import dataclass
+"""Entity extraction using GLiNER for MagicScroll conversations."""
+
 import logging
+from typing import List, Dict, Optional, Any
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ExtractedEntity:
-    """Represents an extracted entity with context."""
-    name: str
-    type: str  # 'mention', 'tag', 'noun_phrase', etc.
-    context: str  # surrounding text
-    confidence: float = 1.0
+    """Represents an extracted entity from text."""
+    text: str
+    label: str
+    confidence: float
+    start: int
+    end: int
+
 
 class EntityExtractor:
-    """Extracts entities from conversation content."""
+    """Local entity extractor using GLiNER for conversation processing."""
     
-    # Common patterns for entity extraction
-    PATTERNS = {
-        'mentions': r'@(\w+)',           # @mentions
-        'tags': r'#(\w+)',               # #hashtags
-        'quotes': r'"([^"]+)"',          # "quoted phrases"
-        'urls': r'https?://\S+',         # URLs
-        'code_refs': r'`([^`]+)`',       # `code references`
-        'key_terms': r'\*\*([^*]+)\*\*'  # **important terms**
-    }
-
-    def __init__(self):
-        """Initialize with compiled regex patterns."""
-        self.compiled_patterns = {
-            name: re.compile(pattern) 
-            for name, pattern in self.PATTERNS.items()
-        }
-        
-    def extract_entities(self, content: str) -> List[ExtractedEntity]:
-        """Extract entities from content using all available methods."""
-        entities: List[ExtractedEntity] = []
-        
-        # Extract structured entities (mentions, tags, etc)
-        entities.extend(self._extract_structured_entities(content))
-        
-        # Extract noun phrases (basic)
-        entities.extend(self._extract_noun_phrases(content))
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_entities = []
-        for entity in entities:
-            if entity.name.lower() not in seen:
-                seen.add(entity.name.lower())
-                unique_entities.append(entity)
-        
-        return unique_entities
+    # Domain-specific entity types for MagicScroll conversations
+    DEFAULT_ENTITY_TYPES = [
+        "person",
+        "organization", 
+        "project_name",
+        "technology",
+        "protocol",
+        "programming_language",
+        "conversation_topic",
+        "temporal_reference",
+        "tool",
+        "framework"
+    ]
     
-    def _extract_structured_entities(self, content: str) -> List[ExtractedEntity]:
-        """Extract entities using regex patterns."""
-        entities = []
+    def __init__(self, model_name: str = "gliner-community/gliner_medium-v2.5", preload: bool = True):
+        """Initialize the entity extractor.
         
-        for entity_type, pattern in self.compiled_patterns.items():
-            matches = pattern.finditer(content)
-            for match in matches:
-                # Get surrounding context (up to 50 chars before and after)
-                start = max(0, match.start() - 50)
-                end = min(len(content), match.end() + 50)
-                context = content[start:end]
-                
-                # Clean up the entity name
-                entity_name = match.group(1) if match.groups() else match.group(0)
-                entity_name = entity_name.strip()
-                
-                if entity_name:  # Ignore empty matches
-                    entities.append(ExtractedEntity(
-                        name=entity_name,
-                        type=entity_type,
-                        context=context,
-                        confidence=1.0  # High confidence for pattern matches
-                    ))
-        
-        return entities
-    
-    def _extract_noun_phrases(self, content: str) -> List[ExtractedEntity]:
+        Args:
+            model_name: GLiNER model to use for extraction
+            preload: Whether to load the model immediately
         """
-        Extract potential noun phrases using basic patterns.
-        This is a simple implementation - could be enhanced with proper NLP.
-        """
-        entities = []
+        self.model_name = model_name
+        self.model = None
+        self._entity_types = self.DEFAULT_ENTITY_TYPES
+        self._gliner_available = None
         
-        # Simple capitalized phrases (2-3 words)
-        cap_pattern = re.compile(r'(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})')
-        matches = cap_pattern.finditer(content)
+        if preload:
+            self._check_gliner_availability()
+            if self._gliner_available:
+                self._load_model()
+    
+    def _check_gliner_availability(self) -> bool:
+        """Check if GLiNER is available and cache the result."""
+        if self._gliner_available is None:
+            try:
+                import gliner
+                self._gliner_available = True
+                logger.info(f"GLiNER available (version: {getattr(gliner, '__version__', 'unknown')})")
+            except ImportError:
+                self._gliner_available = False
+                logger.warning("GLiNER not installed. Entity extraction will be disabled. Run: pip install gliner")
+        return self._gliner_available
         
-        for match in matches:
-            phrase = match.group(0)
-            # Get context
-            start = max(0, match.start() - 50)
-            end = min(len(content), match.end() + 50)
-            context = content[start:end]
+    def _load_model(self):
+        """Load the GLiNER model once at startup."""
+        if not self._check_gliner_availability():
+            return
             
-            entities.append(ExtractedEntity(
-                name=phrase,
-                type='noun_phrase',
-                context=context,
-                confidence=0.7  # Lower confidence for simple pattern matching
-            ))
+        if self.model is None:
+            try:
+                from gliner import GLiNER
+                logger.info(f"Loading GLiNER model: {self.model_name}")
+                self.model = GLiNER.from_pretrained(self.model_name)
+                logger.info("GLiNER model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load GLiNER model: {e}")
+                self.model = None
+                self._gliner_available = False
+    
+    def extract_entities(
+        self, 
+        text: str, 
+        entity_types: Optional[List[str]] = None,
+        confidence_threshold: float = 0.3
+    ) -> List[ExtractedEntity]:
+        """Extract entities from text using GLiNER.
         
-        return entities
+        Args:
+            text: Text to extract entities from
+            entity_types: List of entity types to extract (uses defaults if None)
+            confidence_threshold: Minimum confidence score for entities
+            
+        Returns:
+            List of extracted entities
+        """
+        if not text or not text.strip():
+            return []
+        
+        # Check if GLiNER is available and model is loaded
+        if not self._gliner_available or self.model is None:
+            logger.debug("GLiNER not available or model not loaded - returning empty entities")
+            return []
+            
+        if entity_types is None:
+            entity_types = self._entity_types
+            
+        try:
+            # GLiNER prediction
+            predictions = self.model.predict_entities(text, entity_types)
+            
+            # Convert to our format
+            entities = []
+            for pred in predictions:
+                if pred.get("score", 0) >= confidence_threshold:
+                    entity = ExtractedEntity(
+                        text=pred["text"],
+                        label=pred["label"], 
+                        confidence=pred["score"],
+                        start=pred["start"],
+                        end=pred["end"]
+                    )
+                    entities.append(entity)
+            
+            logger.debug(f"Extracted {len(entities)} entities from text of length {len(text)}")
+            return entities
+            
+        except Exception as e:
+            logger.error(f"Entity extraction failed: {e}")
+            return []
+    
+    def extract_for_conversation(self, conversation_text: str) -> Dict[str, Any]:
+        """Extract entities specifically for conversation storage.
+        
+        Args:
+            conversation_text: Full conversation text
+            
+        Returns:
+            Dictionary with extracted entities and metadata
+        """
+        entities = self.extract_entities(conversation_text)
+        
+        # Group entities by type for easier processing
+        entities_by_type = {}
+        for entity in entities:
+            if entity.label not in entities_by_type:
+                entities_by_type[entity.label] = []
+            entities_by_type[entity.label].append({
+                "text": entity.text,
+                "confidence": entity.confidence,
+                "start": entity.start,
+                "end": entity.end
+            })
+        
+        # Extract unique entity texts per type (deduplicate)
+        unique_entities = {}
+        for entity_type, entity_list in entities_by_type.items():
+            # Keep highest confidence for each unique text
+            seen_texts = {}
+            for entity in entity_list:
+                text = entity["text"].lower().strip()
+                if text not in seen_texts or entity["confidence"] > seen_texts[text]["confidence"]:
+                    seen_texts[text] = entity
+            unique_entities[entity_type] = list(seen_texts.values())
+        
+        return {
+            "entities": entities,
+            "entities_by_type": unique_entities,
+            "entity_count": len(entities),
+            "total_confidence": sum(e.confidence for e in entities) / len(entities) if entities else 0
+        }
+    
+    def get_entity_summary(self, extraction_result: Dict[str, Any]) -> str:
+        """Generate a summary string of extracted entities.
+        
+        Args:
+            extraction_result: Result from extract_for_conversation
+            
+        Returns:
+            Human-readable summary of entities
+        """
+        entities_by_type = extraction_result.get("entities_by_type", {})
+        
+        summary_parts = []
+        for entity_type, entities in entities_by_type.items():
+            if entities:
+                entity_texts = [e["text"] for e in entities]
+                summary_parts.append(f"{entity_type}: {', '.join(entity_texts)}")
+        
+        return "; ".join(summary_parts) if summary_parts else "No entities extracted"
 
-class EntityManager:
-    """Manages entity relationships and metadata."""
-    
-    def __init__(self, graph_manager):
-        """Initialize with reference to graph manager."""
-        self.graph = graph_manager
-        self.extractor = EntityExtractor()
-    
-    async def process_content(
-        self,
-        content: str,
-        entry_id: str,
-        min_confidence: float = 0.7
-    ) -> List[str]:
-        """
-        Process content to extract and store entities.
-        Returns list of entity names that were processed.
-        """
-        # Extract entities
-        extracted = self.extractor.extract_entities(content)
-        
-        # Filter by confidence
-        valid_entities = [
-            entity for entity in extracted
-            if entity.confidence >= min_confidence
-        ]
-        
-        # Get unique entity names
-        entity_names = [entity.name for entity in valid_entities]
-        
-        if entity_names:
-            # Create entity nodes and relationships
-            await self.graph.create_entry_node(
-                entry_id=entry_id,
-                entities=entity_names
-            )
-        
-        return entity_names
+
+# Global instance for convenience
+_entity_extractor = None
+
+def get_entity_extractor() -> EntityExtractor:
+    """Get global entity extractor instance (singleton pattern)."""
+    global _entity_extractor
+    if _entity_extractor is None:
+        _entity_extractor = EntityExtractor(preload=True)
+    return _entity_extractor

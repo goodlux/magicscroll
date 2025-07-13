@@ -28,7 +28,30 @@ class BaseIngestor(ABC):
             db_path: Optional database path override
         """
         self.magic_scroll = magic_scroll
-        self.fipa_db = FIPAACLDatabase(db_path) if not magic_scroll else magic_scroll.fipa_db
+        
+        # Initialize FIPA database with proper fallback and debugging
+        logger.info(f"BaseIngestor init: magic_scroll={magic_scroll is not None}")
+        if magic_scroll:
+            logger.info(f"MagicScroll.fipa_db={magic_scroll.fipa_db is not None}")
+        
+        if magic_scroll and magic_scroll.fipa_db:
+            self.fipa_db = magic_scroll.fipa_db
+            logger.info("Using FIPA database from MagicScroll instance")
+        else:
+            # Fallback: create our own FIPA database
+            logger.info(f"Creating new FIPA database for ingestor with db_path={db_path}")
+            try:
+                self.fipa_db = FIPAACLDatabase(db_path)
+                logger.info("Successfully created new FIPA database for ingestor")
+            except Exception as e:
+                logger.error(f"Failed to create FIPA database: {e}")
+                self.fipa_db = None
+        
+        # Verify FIPA database is working
+        if self.fipa_db is None:
+            logger.error("CRITICAL: self.fipa_db is None after initialization!")
+        else:
+            logger.info("FIPA database successfully initialized in BaseIngestor")
         
         # Tracking counters
         self.processed_conversations = 0
@@ -166,12 +189,28 @@ class BaseIngestor(ABC):
             Or None if processing failed
         """
         try:
+            # Safety check for FIPA database
+            if self.fipa_db is None:
+                error_msg = "CRITICAL: Cannot process conversation - FIPA database is None"
+                logger.error(error_msg)
+                self.errors.append(error_msg)
+                return None
+            
             conv_id = conversation.get('id')
+            title = conversation.get('title', 'Untitled')
+            
+            # Always ensure we have a conversation ID
             if not conv_id:
-                # Create conversation in FIPA database
-                conv_id = self.fipa_db.create_conversation(
-                    title=conversation.get('title', 'Untitled')
-                )
+                conv_id = self.fipa_db.create_conversation(title=title)
+                logger.info(f"Created new FIPA conversation: {conv_id}")
+            else:
+                # Try to create conversation (will be ignored if it already exists)
+                try:
+                    self.fipa_db.create_conversation(title)
+                    logger.debug(f"FIPA conversation already exists or created: {conv_id}")
+                except Exception:
+                    # Conversation might already exist, that's fine
+                    pass
             
             messages = conversation.get('messages', [])
             
@@ -190,6 +229,13 @@ class BaseIngestor(ABC):
                         msg, conv_id, previous_message_id
                     )
                     
+                    # Safety check before saving
+                    if self.fipa_db is None:
+                        error_msg = f"FIPA database became None while processing message {msg.get('id', 'unknown')}"
+                        logger.error(error_msg)
+                        self.errors.append(error_msg)
+                        continue
+                    
                     # Save to FIPA database
                     self.fipa_db.save_message(fipa_msg)
                     fipa_messages.append(fipa_msg)
@@ -206,7 +252,7 @@ class BaseIngestor(ABC):
             
             return {
                 'conversation_id': conv_id,
-                'title': conversation.get('title', 'Untitled'),
+                'title': title,
                 'message_count': len(fipa_messages),
                 'messages': fipa_messages
             }
@@ -219,7 +265,7 @@ class BaseIngestor(ABC):
     
     async def create_ms_entry(self, conversation_data: Dict[str, Any]) -> Optional[MSEntry]:
         """
-        Create an MSEntry for long-term storage and search.
+        Create an MSEntry for long-term storage and search with entity extraction.
         
         Args:
             conversation_data: Processed conversation data
@@ -242,7 +288,14 @@ class BaseIngestor(ABC):
             
             conversation_text = '\n\n'.join(formatted_lines)
             
-            # Create MSConversation entry
+            # Extract entities using GLiNER
+            from ..ms_entity import get_entity_extractor
+            extractor = get_entity_extractor()
+            entities_data = extractor.extract_for_conversation(conversation_text)
+            
+            logger.debug(f"Extracted {entities_data['entity_count']} entities for conversation {conversation_data['conversation_id']}")
+            
+            # Create MSConversation entry with entities
             from ..ms_entry import MSConversation
             ms_entry = MSConversation(
                 content=conversation_text,
@@ -250,13 +303,45 @@ class BaseIngestor(ABC):
                     'fipa_conversation_id': conversation_data['conversation_id'],
                     'title': conversation_data['title'],
                     'message_count': conversation_data['message_count'],
-                    'source': self.source_name
+                    'source': self.source_name,
+                    'entities': entities_data['entities_by_type'] if entities_data else {},
+                    'entity_count': entities_data['entity_count'] if entities_data else 0,
+                    'entity_summary': extractor.get_entity_summary(entities_data) if entities_data else 'No entities extracted'
                 }
             )
             
             # Save to MagicScroll
             entry_id = await self.magic_scroll.save_ms_entry(ms_entry)
-            logger.info(f"Created MSEntry {entry_id} for conversation {conversation_data['conversation_id']}")
+            
+            # Store entities in Kuzu graph database
+            try:
+                from ..ms_kuzu_store import store_entities_in_graph
+                
+                # Convert entity data to GLiNER format for Kuzu storage
+                gliner_entities = []
+                if entities_data and 'entities' in entities_data:
+                    for entity in entities_data['entities']:
+                        gliner_entities.append({
+                            'text': entity.text,
+                            'label': entity.label,
+                            'score': entity.confidence,
+                            'start': entity.start,
+                            'end': entity.end
+                        })
+                
+                entity_counts = store_entities_in_graph(
+                    gliner_entities,
+                    conversation_data['conversation_id'],
+                    entry_id,
+                    conversation_data['title']
+                )
+                
+                logger.info(f"Stored entities in graph: {entity_counts}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to store entities in graph: {e}")
+            
+            logger.info(f"Created MSEntry {entry_id} for conversation {conversation_data['conversation_id']} with {entities_data['entity_count'] if entities_data else 0} entities")
             
             return ms_entry
             

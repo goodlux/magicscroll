@@ -31,34 +31,76 @@ class MagicScroll:
     
     async def initialize(self, storage_type: str = "milvus") -> None:
         """Initialize the components with better error handling."""
+        logger.info(f"Initializing MagicScroll with {storage_type} storage...")
+        
+        # STEP 1: Initialize FIPA database first (needed by ingestors)
+        # This is CRITICAL - if this fails, we can't proceed
+        logger.info("Initializing FIPA database...")
         try:
-            logger.info(f"Initializing MagicScroll with {storage_type} storage...")
-            
-            # Initialize the store based on configuration
+            self.fipa_db = FIPAACLDatabase()
+            logger.info("FIPA database initialized successfully")
+        except Exception as e:
+            logger.error(f"CRITICAL: FIPA database initialization failed: {e}")
+            import traceback
+            logger.error(f"FIPA traceback: {traceback.format_exc()}")
+            # Don't set to None - raise the error so we know what's wrong
+            raise RuntimeError(f"Cannot proceed without FIPA database: {e}")
+        
+        # STEP 2: Initialize storage backends (less critical)
+        try:
+            from .stores import storage
+            logger.info("Initializing storage backends...")
+            storage.init_stores()
+            logger.info("Storage backends initialized")
+        except Exception as e:
+            logger.warning(f"Storage backend initialization failed (non-critical): {e}")
+            # Continue without storage backends
+        
+        # STEP 3: Initialize the MS store (needed for vector search)
+        logger.info("Initializing MS store...")
+        try:
             if storage_type.lower() == "sqlite":
+                logger.info("Creating MSSQLiteStore...")
                 self.ms_store = await MSSQLiteStore.create()
-                logger.info("Using SQLite storage with vector capabilities")
+                logger.info("✅ Using SQLite storage with vector capabilities")
             else:
                 # Default to Milvus
+                logger.info("Creating MSMilvusStore...")
                 self.ms_store = await MSMilvusStore.create()
-                logger.info("Using Milvus storage")
-            
-            # Initialize the search engine
-            from .ms_search import MSSearch
-            self.search_engine = MSSearch(self)
-            
-            # Initialize FIPA database
-            self.fipa_db = FIPAACLDatabase()
-            
-            logger.info("MagicScroll ready to unroll!")
-        
+                logger.info("✅ Using Milvus storage")
+                
+            # Verify the store was created
+            if self.ms_store:
+                logger.info(f"MS store successfully initialized: {type(self.ms_store).__name__}")
+            else:
+                logger.error("MS store is None after creation!")
+                
         except Exception as e:
-            logger.error(f"Failed to initialize MagicScroll: {str(e)}")
-            # Create a minimal functional object instead of raising
+            logger.error(f"MS store initialization failed: {e}")
+            import traceback
+            logger.error(f"MS store traceback: {traceback.format_exc()}")
+            logger.warning("Continuing without MS store - some features will be limited")
             self.ms_store = None
+        
+        # STEP 4: Initialize the search engine (depends on MS store)
+        try:
+            if self.ms_store:
+                from .ms_search import MSSearch
+                self.search_engine = MSSearch(self)
+                logger.info("Search engine initialized")
+            else:
+                logger.warning("No MS store available - skipping search engine")
+                self.search_engine = None
+        except Exception as e:
+            logger.warning(f"Search engine initialization failed: {e}")
             self.search_engine = None
-            self.fipa_db = None
-            logger.warning("MagicScroll running in minimal mode")
+        
+        # Verify critical components
+        if self.fipa_db is None:
+            raise RuntimeError("CRITICAL: FIPA database is None after initialization")
+        
+        logger.info("MagicScroll ready to unroll!")
+        logger.info(f"Components status: fipa_db={self.fipa_db is not None}, ms_store={self.ms_store is not None}, search_engine={self.search_engine is not None}")
         
     async def save_ms_entry(self, entry: MSEntry) -> str:
         """Save an entry through the store."""
